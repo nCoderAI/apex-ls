@@ -184,7 +184,7 @@ object CheckForIssues {
 
     issues.foreach(issue => {
       hasErrors |= issue.isError()
-      if (!issue.isError()) {
+      if (!issue.isError) {
         if (isUnusedIssue(issue.rule().name())) hasUnused = true
         else hasWarnings = true
       }
@@ -294,8 +294,8 @@ object CheckForIssues {
     val issues    = org.issues.issuesForFiles(null, includeWarnings, 0)
     val hasErrors = issues.exists(_.isError())
     val hasWarnings =
-      issues.exists(issue => !issue.isError() && !isUnusedIssue(issue.rule().name()))
-    val hasUnused = issues.exists(issue => !issue.isError() && isUnusedIssue(issue.rule().name()))
+      issues.exists(issue => !issue.isError && !isUnusedIssue(issue.rule().name()))
+    val hasUnused    = issues.exists(issue => !issue.isError && isUnusedIssue(issue.rule().name()))
     val issuesByFile = issues.groupBy(_.filePath())
     val files = issuesByFile.map(kv => {
       val path   = kv._1

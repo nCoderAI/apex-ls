@@ -45,7 +45,7 @@ exports[`Check samples Sample: ActionPlansV4 1`] = `
       "Warning: line 126 at 21-25: 'case' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -229,7 +229,7 @@ exports[`Check samples Sample: ApexTriggerHandler 1`] = `
       "Warning: line 16 at 16: Package dependency for 'ApexTriggerHandler@1.2.1-1' ignored as metadata is not available for analysis.",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -655,7 +655,7 @@ exports[`Check samples Sample: EnhancedLightningGrid 1`] = `
       "Warning: line 22 at 8-26: Local variable is hiding class field 'newpath', see EnhancedLightningGrid/classes/sdgPathParser.cls: line 10 at 12-54",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -776,7 +776,7 @@ exports[`Check samples Sample: Forceea-data-factory 1`] = `
       "Warning: line 551 at 8-77: Local variable is hiding class field 'info', see Forceea-data-factory/force-app/main/forceea/classes/Main/ForceeaService.cls: line 34 at 24-45",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1054,7 +1054,7 @@ exports[`Check samples Sample: MyTriggers 1`] = `
       "Warning: line 1: SObject appears to be re-defining an SObject that already exists 'MyTriggerSetting__mdt', remove the 'label' field if it is extending the SObject",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1354,7 +1354,7 @@ exports[`Check samples Sample: ObjectMerge 1`] = `
       "Warning: line 230 at 16-53: Local variable is hiding class field 'ids', see ObjectMerge/src/classes/ObjectMergeUtility.cls: line 216 at 16-27",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1366,7 +1366,7 @@ exports[`Check samples Sample: Query.apex 1`] = `
       "Warning: line 2206 at 8-25: Local variable is hiding class field 'count', see Query.apex/src/classes/Query.cls: line 1736 at 18-41",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1387,7 +1387,7 @@ exports[`Check samples Sample: R-apex 1`] = `
       "Warning: line 90 at 29-35: 'export' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1415,7 +1415,7 @@ exports[`Check samples Sample: SObjectFabricator 1`] = `
       "Warning: line 18 at 34-37: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1502,7 +1502,7 @@ exports[`Check samples Sample: Zippex 1`] = `
       "Warning: line 599 at 8-40: Local variable is hiding class field 'distcode', see Zippex/classes/Puff.cls: line 462 at 12-70",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1527,7 +1527,7 @@ exports[`Check samples Sample: amoss 1`] = `
       "Warning: line 628 at 33-35: 'of' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1547,7 +1547,7 @@ exports[`Check samples Sample: apex-domainbuilder 1`] = `
       "Warning: line 112 at 28-31: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1587,7 +1587,7 @@ exports[`Check samples Sample: apex-lambda 1`] = `
       "Warning: line 5 at 31-33: 'of' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1599,7 +1599,7 @@ exports[`Check samples Sample: apex-mdapi 1`] = `
       "Warning: line 13342 at 43-51: 'retrieve' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1619,7 +1619,7 @@ exports[`Check samples Sample: apex-query-builder 1`] = `
       "Warning: line 780 at 8-46: Local variable is hiding class field 'result', see apex-query-builder/src/classes/QueryBuilder.cls: line 61 at 12-33",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1813,7 +1813,7 @@ exports[`Check samples Sample: apex-unified-logging 1`] = `
       "Warning: line 93 at 29-33: 'cast' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1865,7 +1865,7 @@ exports[`Check samples Sample: at4dx 1`] = `
       "Warning: line 148 at 24-27: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -1917,7 +1917,7 @@ exports[`Check samples Sample: declarative-lookup-rollup-summaries 1`] = `
       "Warning: line 71 at 4-46: Local variable is hiding class field 'lup', see dlrs/main/classes/RollupEditorControllerTest.cls: line 3:9 to 28:4",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2062,7 +2062,7 @@ exports[`Check samples Sample: fflib-apex-common 1`] = `
       "Warning: line 54 at 13-16: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2093,7 +2093,7 @@ exports[`Check samples Sample: fflib-apex-common-samplecode 1`] = `
       "Warning: line 54 at 13-16: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2110,7 +2110,7 @@ exports[`Check samples Sample: fflib-apex-mocks 1`] = `
       "Warning: line 54 at 13-16: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2122,7 +2122,7 @@ exports[`Check samples Sample: flowtoolbelt 1`] = `
       "Warning: line 11444 at 43-51: 'retrieve' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2134,7 +2134,7 @@ exports[`Check samples Sample: force-di 1`] = `
       "Warning: line 148 at 24-27: 'set' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2147,7 +2147,7 @@ exports[`Check samples Sample: forcedotcom-enterprise-architecture 1`] = `
       "Warning: line 77 at 40-58: Private method overrides have inconsistent behaviour, use global, public or protected",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2187,7 +2187,7 @@ exports[`Check samples Sample: promise 1`] = `
       "Warning: line 65 at 17-21: 'then' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2311,7 +2311,7 @@ exports[`Check samples Sample: selector 1`] = `
       "Warning: line 95 at 35-38: 'any' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2442,7 +2442,7 @@ exports[`Check samples Sample: sobject-work-queue 1`] = `
       "Warning: line 64 at 37-43: 'object' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2467,7 +2467,7 @@ exports[`Check samples Sample: survey-force 1`] = `
       "Warning: line 127 at 22-26: 'join' is currently a legal method name but is a reserved identifier in Apex so should be avoided",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
@@ -2528,7 +2528,7 @@ exports[`Check samples Sample: visualforce-table-grid 1`] = `
       "Warning: line 324 at 5-31: Local variable is hiding class field 'settings', see visualforce-table-grid/src/classes/TableGridController.cls: line 78 at 12-39",
     ],
   ],
-  "status": 0,
+  "status": 5,
 }
 `;
 
