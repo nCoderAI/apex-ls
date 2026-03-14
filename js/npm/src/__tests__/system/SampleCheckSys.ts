@@ -189,7 +189,7 @@ describe("Check samples", () => {
             "-cp",
             "jvm/target/scala-2.13/*:jvm/target/scala-2.13/apex-ls_2.13-*.jar",
             "io.github.apexdevtools.apexls.CheckForIssues",
-            "-d", "warnings",
+            "-d", "unused",
             "-n",
             "-w",
             path,
@@ -197,7 +197,7 @@ describe("Check samples", () => {
           {
             // can only be run from npm dir
             cwd: resolve(process.cwd(), "../.."),
-            timeout: 30000,
+            timeout: 60000,
           }
         );
 
@@ -229,6 +229,6 @@ describe("Check samples", () => {
         cleanupTemporaryFile(tempSfdxProject);
       }
     },
-    40000
+    80000
   );
 });

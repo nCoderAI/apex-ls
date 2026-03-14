@@ -16,6 +16,7 @@ package io.github.apexdevtools.apexls
 
 import com.nawforce.apexlink.api._
 import com.nawforce.apexlink.rpc.OpenOptions
+import com.nawforce.pkgforce.diagnostics.UNUSED_CATEGORY
 import com.nawforce.runtime.platform.Path
 import io.github.apexdevtools.api.IssueLocation
 import mainargs.{Flag, ParserForMethods, TokensReader, arg, main}
@@ -30,10 +31,13 @@ import scala.collection.mutable
   * Defaults to reporting issue but can also be used to report dependency information.
   */
 object CheckForIssues {
-  private final val STATUS_OK: Int        = 0
-  private final val STATUS_ARGS: Int      = 1
-  private final val STATUS_EXCEPTION: Int = 3
-  private final val STATUS_ISSUES: Int    = 4
+  private final val STATUS_OK: Int                  = 0
+  private final val STATUS_ARGS: Int                = 1
+  private final val STATUS_EXCEPTION: Int           = 3
+  private final val STATUS_ISSUES: Int              = 4
+  private final val STATUS_WARNINGS_ONLY: Int       = 5
+  private final val STATUS_UNUSED_ONLY: Int         = 6
+  private final val STATUS_WARNINGS_AND_UNUSED: Int = 7
 
   case class Param(providerId: String, name: String, values: Option[List[String]])
 
@@ -173,11 +177,17 @@ object CheckForIssues {
     val issues = org.issues.issuesForFiles(null, includeWarnings, 0)
     val writer = if (asJSON) new JSONMessageWriter() else new TextMessageWriter()
     writer.startOutput()
-    var hasErrors = false
-    var lastPath  = ""
+    var hasErrors   = false
+    var hasWarnings = false
+    var hasUnused   = false
+    var lastPath    = ""
 
     issues.foreach(issue => {
       hasErrors |= issue.isError()
+      if (!issue.isError) {
+        if (isUnusedIssue(issue.rule().name())) hasUnused = true
+        else hasWarnings = true
+      }
       if (includeWarnings || issue.isError) {
 
         if (issue.filePath() != lastPath) {
@@ -195,7 +205,23 @@ object CheckForIssues {
       writer.endDocument()
 
     print(writer.output)
-    if (hasErrors) STATUS_ISSUES else STATUS_OK
+    exitStatus(hasErrors, hasWarnings, hasUnused)
+  }
+
+  private[apexls] def exitStatus(
+    hasErrors: Boolean,
+    hasWarnings: Boolean,
+    hasUnused: Boolean
+  ): Int = {
+    if (hasErrors) STATUS_ISSUES
+    else if (hasWarnings && hasUnused) STATUS_WARNINGS_AND_UNUSED
+    else if (hasWarnings) STATUS_WARNINGS_ONLY
+    else if (hasUnused) STATUS_UNUSED_ONLY
+    else STATUS_OK
+  }
+
+  private def isUnusedIssue(categoryName: String): Boolean = {
+    categoryName == UNUSED_CATEGORY.name
   }
 
   private trait MessageWriter {
@@ -265,7 +291,11 @@ object CheckForIssues {
 
   private def writeIssuesPMD(org: Org, includeWarnings: Boolean): Int = {
 
-    val issues       = org.issues.issuesForFiles(null, includeWarnings, 0)
+    val issues    = org.issues.issuesForFiles(null, includeWarnings, 0)
+    val hasErrors = issues.exists(_.isError())
+    val hasWarnings =
+      issues.exists(issue => !issue.isError && !isUnusedIssue(issue.rule().name()))
+    val hasUnused    = issues.exists(issue => !issue.isError && isUnusedIssue(issue.rule().name()))
     val issuesByFile = issues.groupBy(_.filePath())
     val files = issuesByFile.map(kv => {
       val path   = kv._1
@@ -298,7 +328,7 @@ object CheckForIssues {
 
     val printer = new scala.xml.PrettyPrinter(80, 2)
     println(printer.format(pmd))
-    STATUS_OK
+    exitStatus(hasErrors, hasWarnings, hasUnused)
   }
 
   private object JSON {
