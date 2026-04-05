@@ -106,6 +106,52 @@ public class SchemaBuilder {
     }
   }
 
+  /** Creates a schema for the refresh-and-diagnose tool. */
+  public static String createRefreshAndDiagnoseSchema() {
+    try {
+      ObjectNode schema = objectMapper.createObjectNode();
+      schema.put("type", "object");
+
+      ObjectNode properties = objectMapper.createObjectNode();
+
+      ObjectNode workspaceProp = objectMapper.createObjectNode();
+      workspaceProp.put("type", "string");
+      workspaceProp.put("description", "Path to the SFDX workspace directory");
+      properties.set("workspace", workspaceProp);
+
+      ObjectNode filePathProp = objectMapper.createObjectNode();
+      filePathProp.put("type", "string");
+      filePathProp.put(
+          "description",
+          "Absolute path to the file that was written/modified and needs to be refreshed before diagnostics");
+      properties.set("filePath", filePathProp);
+
+      ObjectNode includeWarningsProp = objectMapper.createObjectNode();
+      includeWarningsProp.put("type", "boolean");
+      includeWarningsProp.put("description", "Include warning-level issues in results");
+      includeWarningsProp.put("default", false);
+      properties.set("includeWarnings", includeWarningsProp);
+
+      ObjectNode maxIssuesProp = objectMapper.createObjectNode();
+      maxIssuesProp.put("type", "integer");
+      maxIssuesProp.put("description", "Maximum number of issues to return per file");
+      maxIssuesProp.put("default", 100);
+      maxIssuesProp.put("minimum", 1);
+      properties.set("maxIssuesPerFile", maxIssuesProp);
+
+      schema.set("properties", properties);
+
+      ArrayNode required = objectMapper.createArrayNode();
+      required.add("workspace");
+      required.add("filePath");
+      schema.set("required", required);
+
+      return objectMapper.writeValueAsString(schema);
+    } catch (Exception ex) {
+      throw new RuntimeException("Failed to create refresh and diagnose schema", ex);
+    }
+  }
+
   /** Creates a schema for impacted tests tool that takes changed file paths. */
   public static String createImpactedTestsSchema() {
     try {

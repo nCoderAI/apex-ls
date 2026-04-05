@@ -99,6 +99,20 @@ public interface ApexLsBridge extends AutoCloseable {
   CompletableFuture<String> getTestClassItemsChanged(
       String workspaceDirectory, String[] changedPaths);
 
+  /**
+   * Refresh a specific file path (high-priority, synchronous) then get issues. This bypasses the
+   * filesystem indexer and CacheFlusher daemon, giving sub-200ms latency for single-file
+   * validation.
+   *
+   * @param workspaceDirectory path to workspace
+   * @param filePath absolute path to the file that changed
+   * @param includeWarnings include warning-level issues
+   * @param maxIssuesPerFile maximum number of issues to return per file
+   * @return future containing issues in JSON format
+   */
+  CompletableFuture<String> refreshAndDiagnose(
+      String workspaceDirectory, String filePath, boolean includeWarnings, int maxIssuesPerFile);
+
   /** Shutdown the bridge and release resources. */
   @Override
   void close() throws Exception;

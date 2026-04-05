@@ -307,6 +307,50 @@ public class EmbeddedApexLsBridge implements ApexLsBridge {
   }
 
   @Override
+  public CompletableFuture<String> refreshAndDiagnose(
+      String workspaceDirectory, String filePath, boolean includeWarnings, int maxIssuesPerFile) {
+    if (!isReady()) {
+      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
+    }
+
+    try {
+      // Get or create OrgAPI instance for this workspace
+      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
+
+      // Step 1: Trigger high-priority refresh for the specific file.
+      // With highPriority=true and an empty queue, Flusher.queue() calls
+      // pkg.refreshBatched() synchronously inline — no daemon polling needed.
+      Future<scala.runtime.BoxedUnit> refreshFuture = orgAPI.refresh(filePath, true);
+      CompletableFuture<scala.runtime.BoxedUnit> javaRefreshFuture =
+          convertScalaFuture(refreshFuture);
+
+      // Step 2: After refresh completes, get issues
+      return javaRefreshFuture.thenCompose(
+          ignored -> {
+            Future<GetIssuesResult> issuesFuture =
+                orgAPI.getIssues(includeWarnings, maxIssuesPerFile);
+            return convertScalaFuture(issuesFuture);
+          })
+          .thenApply(
+              result -> {
+                String json = convertGetIssuesResultToJson(result);
+                if (logger.isDebugEnabled()) {
+                  logger.debug(
+                      "refreshAndDiagnose: refreshed {} then found {} issues for workspace {}",
+                      filePath,
+                      result.issues().length,
+                      workspaceDirectory);
+                }
+                return json;
+              });
+
+    } catch (Exception ex) {
+      logger.error("Error in refreshAndDiagnose via bridge", ex);
+      return CompletableFuture.failedFuture(ex);
+    }
+  }
+
+  @Override
   public void close() throws Exception {
     // Clear all cached OrgAPI instances
     int cacheSize = workspaceCache.size();

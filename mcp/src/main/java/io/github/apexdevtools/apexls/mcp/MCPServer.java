@@ -20,6 +20,7 @@ import io.github.apexdevtools.apexls.mcp.resources.WorkspaceResource;
 import io.github.apexdevtools.apexls.mcp.tools.ApexFindDefinitionTool;
 import io.github.apexdevtools.apexls.mcp.tools.ApexFindImpactedTestsTool;
 import io.github.apexdevtools.apexls.mcp.tools.ApexFindUsagesTool;
+import io.github.apexdevtools.apexls.mcp.tools.ApexRefreshAndDiagnoseTool;
 import io.github.apexdevtools.apexls.mcp.tools.SfdxCodeDiagnosticsTool;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
@@ -46,6 +47,7 @@ public class MCPServer {
   private ApexFindUsagesTool findUsagesTool;
   private ApexFindDefinitionTool findDefinitionTool;
   private ApexFindImpactedTestsTool findImpactedTestsTool;
+  private ApexRefreshAndDiagnoseTool refreshAndDiagnoseTool;
   private WorkspaceResource workspaceResource;
 
   public MCPServer(MCPServerConfig config) {
@@ -112,12 +114,14 @@ public class MCPServer {
     findUsagesTool = new ApexFindUsagesTool(bridge);
     findDefinitionTool = new ApexFindDefinitionTool(bridge);
     findImpactedTestsTool = new ApexFindImpactedTestsTool(bridge);
+    refreshAndDiagnoseTool = new ApexRefreshAndDiagnoseTool(bridge);
     workspaceResource = new WorkspaceResource(bridge);
 
     logger.info("  - SFDX Code Diagnostics Tool");
     logger.info("  - Apex Find Usages Tool");
     logger.info("  - Apex Find Definition Tool");
     logger.info("  - Apex Find Impacted Tests Tool");
+    logger.info("  - Apex Refresh and Diagnose Tool");
     logger.info("  - Workspace Resource");
 
     // Create transport provider
@@ -132,7 +136,8 @@ public class MCPServer {
                 sfdxDiagnosticsTool.getSpecification(),
                 findUsagesTool.getSpecification(),
                 findDefinitionTool.getSpecification(),
-                findImpactedTestsTool.getSpecification())
+                findImpactedTestsTool.getSpecification(),
+                refreshAndDiagnoseTool.getSpecification())
             .resources(workspaceResource.getSpecification());
 
     // Build the server - transport provider handles lifecycle
