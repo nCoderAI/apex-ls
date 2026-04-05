@@ -1,0 +1,61 @@
+name: Build and Release JAR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "sbt"
+
+      - uses: sbt/setup-sbt@v1
+
+      - name: Build core apex-ls
+        run: sbt build
+
+      - name: Build MCP Standalone JAR
+        working-directory: mcp
+        run: sbt buildStandalone
+
+      - name: Find and rename JAR
+        id: jar
+        run: |
+          JAR=$(find mcp/target -name "*standalone.jar" | head -1)
+          echo "Found JAR: $JAR"
+          cp "$JAR" apex-ls-mcp-standalone.jar
+          echo "jar_path=apex-ls-mcp-standalone.jar" >> $GITHUB_OUTPUT
+          SHA=$(git rev-parse --short HEAD)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-ls-mcp-standalone
+          path: apex-ls-mcp-standalone.jar
+          retention-days: 90
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete existing 'latest' release if it exists
+          gh release delete latest --yes 2>/dev/null || true
+          git tag -d latest 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+          # Create new release
+          gh release create latest \
+            --title "Latest Build (${{ steps.jar.outputs.sha }})" \
+            --notes "Auto-built from commit ${{ steps.jar.outputs.sha }}" \
+            --prerelease \
+            apex-ls-mcp-standalone.jar
