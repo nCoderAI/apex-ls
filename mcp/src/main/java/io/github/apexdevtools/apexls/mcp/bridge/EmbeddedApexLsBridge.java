@@ -25,10 +25,11 @@ import io.github.apexdevtools.apexls.mcp.MCPServerConfig;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +43,19 @@ import scala.concurrent.Future;
  * converting Scala Futures to Java CompletableFutures and results to JSON strings for consumption
  * by the Java 17 MCP tools.
  *
- * <p>OrgAPI instances are cached per workspace to avoid expensive open() calls.
+ * <p><b>Workspace model.</b> apex-ls core is single-workspace: {@code OrgQueue} holds ONE global
+ * instance, {@code OrgQueue.open()} replaces it, and every {@code OrgAPIImpl} method delegates to
+ * {@code OrgQueue.instance()} -- {@code OrgAPIImpl} itself is a stateless facade holding no
+ * workspace state.
+ *
+ * <p>Consequently a per-workspace cache of OrgAPI handles is NOT possible here. A cache hit that
+ * skipped {@code open()} would leave the global queue pointing at whichever workspace was opened
+ * last, and the call would silently return diagnostics for THAT workspace instead -- i.e. a clean
+ * result for broken code, or one org's results for another org.
+ *
+ * <p>So we keep exactly one OrgAPI, re-open whenever the requested workspace is not the one
+ * currently open, and serialize open+query on a single thread so a concurrent request cannot swap
+ * the workspace underneath an in-flight call.
  */
 public class EmbeddedApexLsBridge implements ApexLsBridge {
 
@@ -53,7 +66,24 @@ public class EmbeddedApexLsBridge implements ApexLsBridge {
   private static final IndexerConfig indexerConfig = new IndexerConfig();
 
   private final MCPServerConfig config;
-  private final Map<String, OrgAPI> workspaceCache = new ConcurrentHashMap<>();
+
+  /** Serializes open+query so the single global workspace cannot be swapped mid-call. */
+  private final ExecutorService apexExecutor =
+      Executors.newSingleThreadExecutor(
+          runnable -> {
+            Thread thread = new Thread(runnable, "apex-ls-bridge");
+            thread.setDaemon(true);
+            return thread;
+          });
+
+  /**
+   * The single OrgAPI facade, and the workspace currently open in core. Touched only on
+   * apexExecutor (volatile for visibility from close()).
+   */
+  private volatile OrgAPI orgAPI;
+
+  private volatile String openWorkspace;
+
   private boolean initialized = false;
 
   public EmbeddedApexLsBridge(MCPServerConfig config) {
@@ -107,158 +137,118 @@ public class EmbeddedApexLsBridge implements ApexLsBridge {
   }
 
   /**
-   * Get or create an OrgAPI instance for the specified workspace. Instances are cached to avoid
-   * expensive open() calls.
+   * Ensure {@code workspaceDirectory} is the workspace currently open in apex-ls core, opening it
+   * if it is not.
+   *
+   * <p>MUST be called on {@link #apexExecutor} so that the open and the API call that follows it
+   * are atomic with respect to other requests.
    */
-  private OrgAPI getOrCreateOrgAPI(String workspaceDirectory) {
-    return workspaceCache.computeIfAbsent(
+  private OrgAPI ensureWorkspaceOpen(String workspaceDirectory) {
+    if (orgAPI == null) {
+      orgAPI = new OrgAPIImpl();
+    }
+
+    if (workspaceDirectory.equals(openWorkspace)) {
+      // Already the open workspace -- core is warm, nothing to do.
+      return orgAPI;
+    }
+
+    logger.debug(
+        "Opening workspace in apex-ls core: {} (previously open: {})",
         workspaceDirectory,
-        dir -> {
-          logger.debug("Creating OrgAPI for workspace: {}", dir);
+        openWorkspace);
 
-          OrgAPI orgAPI = new OrgAPIImpl();
+    OpenOptions options =
+        OpenOptions.create()
+            .withParser("OutlineSingle")
+            .withAutoFlush(config.isCacheEnabled())
+            .withLoggingLevel(config.getLoggingLevel())
+            .withCache(config.isCacheEnabled());
 
-          // Build OpenOptions with MCP server configuration
-          OpenOptions options =
-              OpenOptions.create()
-                  .withParser("OutlineSingle")
-                  .withAutoFlush(config.isCacheEnabled())
-                  .withLoggingLevel(config.getLoggingLevel())
-                  .withCache(config.isCacheEnabled());
+    // Blocks this executor thread until the open completes. OrgQueue.open() also shuts down
+    // the queue for the previously open workspace, releasing its parsed Org for collection.
+    convertScalaFuture(orgAPI.open(workspaceDirectory, options)).join();
+    openWorkspace = workspaceDirectory;
+    return orgAPI;
+  }
 
-          orgAPI.open(dir, options);
-          return orgAPI;
-        });
+  /**
+   * Run an apex-ls operation with {@code workspaceDirectory} open, exclusively of any other
+   * request, off the caller's thread.
+   */
+  private <T> CompletableFuture<T> onWorkspace(
+      String workspaceDirectory, Function<OrgAPI, Future<T>> operation) {
+    if (!isReady()) {
+      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
+    }
+
+    return CompletableFuture.supplyAsync(
+            () -> {
+              OrgAPI api = ensureWorkspaceOpen(workspaceDirectory);
+              return convertScalaFuture(operation.apply(api)).join();
+            },
+            apexExecutor)
+        .whenComplete(
+            (result, ex) -> {
+              if (ex != null) {
+                logger.error("apex-ls call failed for workspace {}", workspaceDirectory, ex);
+              }
+            });
   }
 
   @Override
   public CompletableFuture<String> getIssues(
       String workspaceDirectory, boolean includeWarnings, int maxIssuesPerFile) {
-    if (!isReady()) {
-      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
-    }
-
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
-
-      // Call OrgAPI.getIssues() directly with maxIssuesPerFile parameter
-      Future<GetIssuesResult> scalaFuture = orgAPI.getIssues(includeWarnings, maxIssuesPerFile);
-
-      // Convert Scala Future to Java CompletableFuture
-      CompletableFuture<GetIssuesResult> future = convertScalaFuture(scalaFuture);
-
-      // Convert the result to JSON string
-      return future.thenApply(
-          result -> {
-            String json = convertGetIssuesResultToJson(result);
-            if (logger.isDebugEnabled()) {
-              logger.debug(
-                  "Found {} issues for workspace {}", result.issues().length, workspaceDirectory);
-            }
-            return json;
-          });
-
-    } catch (Exception ex) {
-      logger.error("Error calling getIssues via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+    return onWorkspace(workspaceDirectory, api -> api.getIssues(includeWarnings, maxIssuesPerFile))
+        .thenApply(
+            result -> {
+              if (logger.isDebugEnabled()) {
+                logger.debug(
+                    "Found {} issues for workspace {}", result.issues().length, workspaceDirectory);
+              }
+              return convertGetIssuesResultToJson(result);
+            });
   }
 
   @Override
   public CompletableFuture<String> findUsages(
       String workspaceDirectory, String filePath, int line, int offset) {
-    if (!isReady()) {
-      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
-    }
-
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
-
-      // Call OrgAPI.getReferences() directly
-      // Note: Both MCP tools and OrgAPI use 1-based line numbers
-      Future<TargetLocation[]> scalaFuture = orgAPI.getReferences(filePath, line, offset);
-
-      // Convert Scala Future to Java CompletableFuture
-      CompletableFuture<TargetLocation[]> future = convertScalaFuture(scalaFuture);
-
-      // Convert the result to JSON string
-      return future.thenApply(
-          result -> {
-            String json = convertTargetLocationsToJson(result);
-            if (logger.isDebugEnabled()) {
-              logger.debug("Found {} usages for {}:{}:{}", result.length, filePath, line, offset);
-            }
-            return json;
-          });
-
-    } catch (Exception ex) {
-      logger.error("Error calling findUsages via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+    // Note: Both MCP tools and OrgAPI use 1-based line numbers
+    return onWorkspace(workspaceDirectory, api -> api.getReferences(filePath, line, offset))
+        .thenApply(
+            result -> {
+              if (logger.isDebugEnabled()) {
+                logger.debug("Found {} usages for {}:{}:{}", result.length, filePath, line, offset);
+              }
+              return convertTargetLocationsToJson(result);
+            });
   }
 
   @Override
   public CompletableFuture<String> getDefinition(
       String workspaceDirectory, String filePath, int line, int offset) {
-    if (!isReady()) {
-      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
-    }
-
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
-
-      // Call OrgAPI.getDefinition() directly
-      // Note: Both MCP tools and OrgAPI use 1-based line numbers
-      Future<LocationLink[]> scalaFuture =
-          orgAPI.getDefinition(filePath, line, offset, scala.Option.empty());
-
-      // Convert Scala Future to Java CompletableFuture
-      CompletableFuture<LocationLink[]> future = convertScalaFuture(scalaFuture);
-
-      // Convert the result to JSON string
-      return future.thenApply(this::convertLocationLinksToJson);
-
-    } catch (Exception ex) {
-      logger.error("Error calling getDefinition via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+    // Note: Both MCP tools and OrgAPI use 1-based line numbers
+    return onWorkspace(
+            workspaceDirectory,
+            api -> api.getDefinition(filePath, line, offset, scala.Option.empty()))
+        .thenApply(this::convertLocationLinksToJson);
   }
 
   @Override
   public CompletableFuture<String> getWorkspaceInfo(String workspaceDirectory) {
-    if (!isReady()) {
-      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
-    }
-
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
-
-      // Get version info
-      Future<String> scalaVersionFuture = orgAPI.version();
-      CompletableFuture<String> versionFuture = convertScalaFuture(scalaVersionFuture);
-
-      // Build workspace info JSON
-      return versionFuture.thenApply(
-          version ->
-              "{\n"
-                  + "  \"workspace\": \""
-                  + workspaceDirectory
-                  + "\",\n"
-                  + "  \"status\": \"active\",\n"
-                  + "  \"type\": \"apex\",\n"
-                  + "  \"version\": \""
-                  + version
-                  + "\"\n"
-                  + "}");
-
-    } catch (Exception ex) {
-      logger.error("Error calling getWorkspaceInfo via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+    return onWorkspace(workspaceDirectory, OrgAPI::version)
+        .thenApply(
+            version ->
+                "{\n"
+                    + "  \"workspace\": \""
+                    + workspaceDirectory
+                    + "\",\n"
+                    + "  \"status\": \"active\",\n"
+                    + "  \"type\": \"apex\",\n"
+                    + "  \"version\": \""
+                    + version
+                    + "\"\n"
+                    + "}");
   }
 
   @Override
@@ -284,26 +274,8 @@ public class EmbeddedApexLsBridge implements ApexLsBridge {
   @Override
   public CompletableFuture<String> getTestClassItemsChanged(
       String workspaceDirectory, String[] changedPaths) {
-    if (!isReady()) {
-      return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
-    }
-
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
-
-      // Call OrgAPI.getTestClassItemsChanged() with the array of changed paths
-      Future<?> scalaFuture = orgAPI.getTestClassItemsChanged(changedPaths);
-
-      // Convert Scala Future to Java CompletableFuture and then to JSON
-      // Pass the original changed paths for filtering
-      return convertScalaFuture(scalaFuture)
-          .thenApply(result -> convertTestClassItemsResultToJson(result, changedPaths));
-
-    } catch (Exception ex) {
-      logger.error("Error calling getTestClassItemsChanged via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+    return onWorkspace(workspaceDirectory, api -> api.getTestClassItemsChanged(changedPaths))
+        .thenApply(result -> convertTestClassItemsResultToJson(result, changedPaths));
   }
 
   @Override
@@ -313,50 +285,47 @@ public class EmbeddedApexLsBridge implements ApexLsBridge {
       return CompletableFuture.failedFuture(new IllegalStateException("Bridge not initialized"));
     }
 
-    try {
-      // Get or create OrgAPI instance for this workspace
-      OrgAPI orgAPI = getOrCreateOrgAPI(workspaceDirectory);
+    // The refresh and the getIssues that reads its result must run inside ONE exclusive task:
+    // apex-ls core has a single global workspace, so a concurrent request between the two steps
+    // would otherwise re-open a different workspace and we would diagnose the wrong one.
+    return CompletableFuture.supplyAsync(
+            () -> {
+              OrgAPI api = ensureWorkspaceOpen(workspaceDirectory);
 
-      // Step 1: Trigger high-priority refresh for the specific file.
-      // With highPriority=true and an empty queue, Flusher.queue() calls
-      // pkg.refreshBatched() synchronously inline — no daemon polling needed.
-      Future<scala.runtime.BoxedUnit> refreshFuture = orgAPI.refresh(filePath, true);
-      CompletableFuture<scala.runtime.BoxedUnit> javaRefreshFuture =
-          convertScalaFuture(refreshFuture);
+              // Step 1: high-priority refresh for the specific file. With highPriority=true and
+              // an empty queue, Flusher.queue() calls pkg.refreshBatched() synchronously inline.
+              convertScalaFuture(api.refresh(filePath, true)).join();
 
-      // Step 2: After refresh completes, get issues
-      return javaRefreshFuture.thenCompose(
-          ignored -> {
-            Future<GetIssuesResult> issuesFuture =
-                orgAPI.getIssues(includeWarnings, maxIssuesPerFile);
-            return convertScalaFuture(issuesFuture);
-          })
-          .thenApply(
-              result -> {
-                String json = convertGetIssuesResultToJson(result);
-                if (logger.isDebugEnabled()) {
-                  logger.debug(
-                      "refreshAndDiagnose: refreshed {} then found {} issues for workspace {}",
-                      filePath,
-                      result.issues().length,
-                      workspaceDirectory);
-                }
-                return json;
-              });
+              // Step 2: after refresh completes, get issues
+              GetIssuesResult result =
+                  convertScalaFuture(api.getIssues(includeWarnings, maxIssuesPerFile)).join();
 
-    } catch (Exception ex) {
-      logger.error("Error in refreshAndDiagnose via bridge", ex);
-      return CompletableFuture.failedFuture(ex);
-    }
+              if (logger.isDebugEnabled()) {
+                logger.debug(
+                    "refreshAndDiagnose: refreshed {} then found {} issues for workspace {}",
+                    filePath,
+                    result.issues().length,
+                    workspaceDirectory);
+              }
+              return convertGetIssuesResultToJson(result);
+            },
+            apexExecutor)
+        .whenComplete(
+            (result, ex) -> {
+              if (ex != null) {
+                logger.error(
+                    "Error in refreshAndDiagnose for workspace {}", workspaceDirectory, ex);
+              }
+            });
   }
 
   @Override
   public void close() throws Exception {
-    // Clear all cached OrgAPI instances
-    int cacheSize = workspaceCache.size();
-    workspaceCache.clear();
     initialized = false;
-    logger.info("Embedded apex-ls bridge closed, cleared {} workspace caches", cacheSize);
+    apexExecutor.shutdownNow();
+    orgAPI = null;
+    openWorkspace = null;
+    logger.info("Embedded apex-ls bridge closed");
   }
 
   /** Convert a Scala Future to a Java CompletableFuture */

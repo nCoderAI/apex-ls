@@ -15,6 +15,7 @@
 package com.nawforce.apexlink.rpc
 
 import com.nawforce.apexlink.api._
+import com.nawforce.apexlink.org.OPM
 import com.nawforce.apexlink.org.OPM.PackageImpl
 import com.nawforce.apexlink.{ParserHelper, TestHelper}
 import com.nawforce.pkgforce.diagnostics.LoggerOps.{DEBUG_LOGGING, NO_LOGGING}
@@ -122,6 +123,25 @@ class OrgAPITest extends AsyncFunSuite with BeforeAndAfterEach with TestHelper {
     } yield {
       assert(result.error.isEmpty && result.namespaces.sameElements(Array("")))
       assert(issues.issues.forall(_.diagnostic.category != ERROR_CATEGORY))
+    }
+  }
+
+  test("Opening a second workspace disposes the first") {
+    // OrgQueue holds a single global org and open() replaces it. The replaced org MUST be shut
+    // down: its cache-flusher thread and its dispatcher thread both reference the org, so while
+    // they run they are GC roots and every parsed type stays in the heap for the life of the JVM.
+    // A caller that opens a fresh workspace per request (e.g. validating against a throwaway
+    // overlay directory) otherwise leaks one entire parsed org per call.
+    val orgAPI = OrgAPI()
+    for {
+      _ <- orgAPI.open(samplesDir.join("sfdx-test").toString())
+      firstOrg = OrgQueue.instance().org.asInstanceOf[OPM.OrgImpl]
+      _ <- orgAPI.open(samplesDir.join("sfdx-ns-test").toString())
+    } yield {
+      val secondOrg = OrgQueue.instance().org.asInstanceOf[OPM.OrgImpl]
+      assert(secondOrg ne firstOrg, "open() should have replaced the org")
+      assert(firstOrg.isShutdown, "the replaced org was not disposed -- it will leak")
+      assert(!secondOrg.isShutdown, "the newly opened org must still be live")
     }
   }
 

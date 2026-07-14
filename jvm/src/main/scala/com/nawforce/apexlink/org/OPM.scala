@@ -94,6 +94,27 @@ object OPM {
     private val flusher =
       if (autoFlush) new CacheFlusher(this, parsedCache) else new Flusher(this, parsedCache)
 
+    /** Release background resources held by this org.
+      *
+      * Call this when the org is being discarded (see OrgQueue.open, which replaces the current
+      * org). The org must not be used afterwards. Two per-org resources outlive the org otherwise:
+      *
+      *   - the flusher's thread, which references this org and so is a GC root keeping every
+      *     parsed type in the heap for the life of the JVM, and
+      *   - the workspace file monitor's WatchService thread, which goes on watching a directory
+      *     that may since have been deleted, holding a native thread and its file handles.
+      */
+    def shutdown(): Unit = {
+      _shutdown = true
+      flusher.shutdown()
+      monitorLauncher.stop()
+    }
+
+    @volatile private var _shutdown = false
+
+    /** Has this org been discarded via shutdown()? */
+    private[nawforce] def isShutdown: Boolean = _shutdown
+
     /* Parser type to use for org */
     lazy val getParserType: AvailableParser = {
       val parserType = ServerOps.getCurrentParser

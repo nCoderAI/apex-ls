@@ -115,41 +115,71 @@ class Flusher(org: OPM.OrgImpl, parsedCache: Option[ParsedCache]) {
     }
   }
 
+  /** Stop any background activity for this flusher.
+    *
+    * The base Flusher owns no thread, so there is nothing to stop.
+    */
+  def shutdown(): Unit = ()
+
 }
 
 class CacheFlusher(org: OPM.OrgImpl, parsedCache: Option[ParsedCache])
     extends Flusher(org, parsedCache)
     with Runnable {
 
+  @volatile private var running = true
+
   private val t = new Thread(this)
   t.setDaemon(true)
   t.setName("apex-link cache flusher")
   t.start()
 
+  /** Stop the flusher thread so this org can be garbage collected.
+    *
+    * This Runnable holds `org`, so while its thread is alive the thread is a GC root pinning the
+    * entire parsed workspace -- being a daemon thread does not help, daemon threads are still GC
+    * roots. Without this, every Org ever opened stays in the heap for the life of the JVM.
+    *
+    * Callers must treat the org as discarded once this returns; any queued refreshes are dropped
+    * rather than flushed, which is what we want for a workspace that is going away.
+    */
+  override def shutdown(): Unit = {
+    running = false
+    t.interrupt()
+  }
+
   override def run(): Unit = {
     def queueSize: Int   = org.refreshLock.synchronized { refreshQueue.size }
     def skipped: Boolean = org.refreshLock.synchronized { skippedQueue }
 
-    while (true) {
-      // Wait for non-zero queue to be stable
-      // Or with an empty queue and a priority/single update
-      var stable = false
-      var skip   = false
-      while (!stable && !skip) {
-        val start = queueSize
-        Thread.sleep(1000)
-        val end = queueSize
-        stable = start > 0 && start == end
-        skip = skipped
-      }
+    try {
+      while (running) {
+        // Wait for non-zero queue to be stable
+        // Or with an empty queue and a priority/single update
+        var stable = false
+        var skip   = false
+        while (running && !stable && !skip) {
+          val start = queueSize
+          Thread.sleep(1000)
+          val end = queueSize
+          stable = start > 0 && start == end
+          skip = skipped
+        }
 
-      if (stable) {
-        // Process refresh requests & flush
-        refreshAndFlush()
-      } else if (skip) {
-        // Already refreshed, just flush
-        flush()
+        if (running) {
+          if (stable) {
+            // Process refresh requests & flush
+            refreshAndFlush()
+          } else if (skip) {
+            // Already refreshed, just flush
+            flush()
+          }
+        }
       }
+    } catch {
+      // Only thrown by shutdown() interrupting sleep(). This is a shutdown signal, not a
+      // failure: exit the loop and restore the interrupt flag.
+      case _: InterruptedException => Thread.currentThread().interrupt()
     }
   }
 }

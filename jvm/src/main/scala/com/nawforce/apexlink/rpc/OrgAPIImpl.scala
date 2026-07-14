@@ -33,25 +33,55 @@ class OrgQueue(path: String, options: OpenOptions) {
   self =>
   val org: Org = Org.newOrg(Path(path), options)
 
-  private val queue      = new LinkedBlockingQueue[APIRequest]()
-  private val dispatcher = new APIRequestDispatcher()
-  new Thread(dispatcher).start()
+  private val queue             = new LinkedBlockingQueue[APIRequest]()
+  @volatile private var running = true
+
+  private val dispatcher       = new APIRequestDispatcher()
+  private val dispatcherThread = new Thread(dispatcher, s"apex-ls-org-queue")
+  // Daemon so a stranded queue can never hold the JVM open, and so it is never
+  // a GC root for `org` once shutdown() has run.
+  dispatcherThread.setDaemon(true)
+  dispatcherThread.start()
 
   private class APIRequestDispatcher() extends Runnable {
 
     override def run(): Unit = {
-      while (true) {
-        val request = queue.take()
+      try {
+        while (running) {
+          val request = queue.take()
 
-        while (org.isDirty()) Thread.sleep(50)
+          while (running && org.isDirty()) Thread.sleep(50)
 
-        request.process(self)
+          if (running) request.process(self)
+        }
+      } catch {
+        // Only ever thrown by shutdown() interrupting take()/sleep(). Exit the loop
+        // and restore the interrupt flag; this is a shutdown signal, not a failure.
+        case _: InterruptedException => Thread.currentThread().interrupt()
       }
     }
   }
 
   def add(request: APIRequest): Unit =
     queue.add(request)
+
+  /** Stop this queue and release the org it holds.
+    *
+    * Two threads reference `org` -- and so pin the entire parsed workspace in the heap until both
+    * exit:
+    *   - this queue's dispatcher (an inner class, so it references OrgQueue.this), and
+    *   - the org's own "apex-link cache flusher" thread (started by OrgImpl when autoFlush is on).
+    * Both are GC roots while alive. OrgQueue.open() calls this on the queue it replaces.
+    */
+  def shutdown(): Unit = {
+    running = false
+    dispatcherThread.interrupt()
+
+    org match {
+      case orgImpl: OPM.OrgImpl => orgImpl.shutdown()
+      case _                    => ()
+    }
+  }
 
   def refresh(path: String, highPriority: Boolean): Unit = {
     Option(org.getPackageForPath(path)).foreach(_.refresh(path, highPriority))
@@ -532,6 +562,10 @@ object OrgQueue {
 
   def open(path: String, options: OpenOptions = OpenOptions.default()): OrgQueue = {
     synchronized {
+      // Shut the outgoing queue down before dropping it. Without this its dispatcher
+      // thread keeps running forever, and as a live thread it is a GC root holding the
+      // previous OrgQueue -- and its fully parsed Org -- permanently in the heap.
+      _instance.foreach(_.shutdown())
       _instance = Some(new OrgQueue(path, options))
       _instance.get
     }

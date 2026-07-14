@@ -27,9 +27,9 @@ import org.slf4j.LoggerFactory;
  * MCP tool that explicitly refreshes a single file then returns diagnostics. Bypasses the
  * filesystem indexer and CacheFlusher daemon for sub-200ms validation latency.
  *
- * <p>Use this when you've written/modified a file and need immediate diagnostics without waiting for
- * the background indexer to detect the change (~2-3s). The refresh is high-priority and synchronous,
- * so diagnostics reflect the current file content on disk.
+ * <p>Use this when you've written/modified a file and need immediate diagnostics without waiting
+ * for the background indexer to detect the change (~2-3s). The refresh is high-priority and
+ * synchronous, so diagnostics reflect the current file content on disk.
  */
 public class ApexRefreshAndDiagnoseTool {
 
