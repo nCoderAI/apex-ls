@@ -55,6 +55,41 @@ class UnusedTest extends AnyFunSuite with TestHelper {
     }
   }
 
+  test("Unused virtual override hierarchy methods include context") {
+    FileSystemHelper.run(
+      Map(
+        "Base.cls"  -> "public virtual class Base { public virtual void describe() {} }",
+        "Child.cls" -> "public class Child extends Base { public override void describe() {} }",
+        "Foo.cls" -> "public class Foo { { Type baseType = Base.class; Type childType = Child.class; } }"
+      )
+    ) { root: PathLike =>
+      val org = createOrgWithUnused(root)
+      assert(
+        orgIssuesFor(org, root.join("Base.cls"))
+          .contains("Unused public method 'void describe()' (all overrides also unused)")
+      )
+      assert(
+        orgIssuesFor(org, root.join("Child.cls"))
+          .contains("Unused public method 'void describe()' (overrides unused virtual method)")
+      )
+    }
+  }
+
+  test("Unused public static method includes entry point guidance") {
+    FileSystemHelper.run(
+      Map(
+        "Dummy.cls" -> "public class Dummy {public static void run() {}}",
+        "Foo.cls"   -> "public class Foo{ {Type t = Dummy.class;} }"
+      )
+    ) { root: PathLike =>
+      val org = createOrgWithUnused(root)
+      assert(
+        orgIssuesFor(org, root.join("Dummy.cls")) ==
+          "Unused: line 1 at 39-42: Unused public static method 'void run()'; remove, make private @TestVisible, or add @SuppressWarnings('Unused') with a comment if this is an external entry point\n"
+      )
+    }
+  }
+
   test("Unused global method") {
     FileSystemHelper.run(
       Map(
@@ -429,6 +464,23 @@ class UnusedTest extends AnyFunSuite with TestHelper {
     }
   }
 
+  test("Unused empty integration test class") {
+    FileSystemHelper.run(Map("Dummy.cls" -> "@IntegrationTest public class Dummy {}")) {
+      root: PathLike =>
+        val org = createOrgWithUnused(root)
+        assert(orgIssuesFor(org, root.join("Dummy.cls")).isEmpty)
+    }
+  }
+
+  test("Unused TearDown method") {
+    FileSystemHelper.run(
+      Map("Dummy.cls" -> "@IntegrationTest public class Dummy {@TearDown static void cleanup() {}}")
+    ) { root: PathLike =>
+      val org = createOrgWithUnused(root)
+      assert(orgIssuesFor(org, root.join("Dummy.cls")).isEmpty)
+    }
+  }
+
   test("Unused class") {
     FileSystemHelper.run(Map("Dummy.cls" -> "public class Dummy {Object a; void func() {}}")) {
       root: PathLike =>
@@ -437,6 +489,33 @@ class UnusedTest extends AnyFunSuite with TestHelper {
           orgIssuesFor(org, root.join("Dummy.cls")) ==
             "Unused: line 1 at 13-18: Unused class 'Dummy'\n"
         )
+    }
+  }
+
+  test("Global interface method is not flagged as unused") {
+    FileSystemHelper.run(
+      Map(
+        "Dummy.cls" -> "global interface Dummy {String selectOrganization();}",
+        "Foo.cls"   -> "public class Foo{ {Type t = Dummy.class;} }"
+      )
+    ) { root: PathLike =>
+      val org = createOrgWithUnused(root)
+      assert(orgIssuesFor(org, root.join("Dummy.cls")).isEmpty)
+    }
+  }
+
+  test("Public interface method can be flagged as unused") {
+    FileSystemHelper.run(
+      Map(
+        "Dummy.cls" -> "public interface Dummy {String selectOrganization();}",
+        "Foo.cls"   -> "public class Foo{ {Type t = Dummy.class;} }"
+      )
+    ) { root: PathLike =>
+      val org = createOrgWithUnused(root)
+      assert(
+        orgIssuesFor(org, root.join("Dummy.cls")) ==
+          "Unused: line 1 at 31-49: Unused public method 'System.String selectOrganization()'\n"
+      )
     }
   }
 
@@ -714,6 +793,37 @@ class UnusedTest extends AnyFunSuite with TestHelper {
     )
   }
 
+  /** Asserts holder-based unused analysis for cache-loaded (summary) classes produces exactly the
+    * same diagnostics as a full parse of the same workspace. This is the core invariant behind
+    * issue #477: unused is a whole-program property, so a cache-loaded result must match what a cold
+    * parse of the same sources would report rather than replaying a stale cached result.
+    */
+  def assertCachedUnusedMatchesFullParse(sources: Map[String, String], files: Seq[String]): Unit = {
+    withManualFlush {
+      FileSystemHelper.run(sources) { root: PathLike =>
+        // Full parse establishes the ground-truth diagnostics
+        val cold = createOrgWithUnused(root)
+        files.foreach(f => assertIsFullDeclaration(cold.unmanaged, f.stripSuffix(".cls")))
+        val coldIssues = files.map(f => f -> orgIssuesFor(cold, root.join(f))).toMap
+        cold.flush()
+
+        // Reload from cache and require identical diagnostics
+        val warm = createOrgWithUnused(root)
+        files.foreach(f => assertIsSummaryDeclaration(warm.unmanaged, f.stripSuffix(".cls")))
+        OrgInfo.current.withValue(warm) {
+          files.foreach(f => {
+            val warmIssues = orgIssuesFor(warm, root.join(f))
+            assert(
+              warmIssues == coldIssues(f),
+              s"cache-loaded unused for $f differs from full parse: " +
+                s"cold='${coldIssues(f)}' warm='$warmIssues'"
+            )
+          })
+        }
+      }
+    }
+  }
+
   test("Used method on summary type") {
     withManualFlush {
       FileSystemHelper.run(
@@ -765,6 +875,86 @@ class UnusedTest extends AnyFunSuite with TestHelper {
             orgIssuesFor(org2, root.join("Dummy.cls")) ==
               "Unused: line 1 at 32-35: Unused public method 'void foo()'\n"
           )
+        }
+      }
+    }
+  }
+
+  test("Enum synthetic methods are not flagged on summary type (#477)") {
+    // values/valueOf/name/ordinal/equals/hashCode/toString are synthetic and must stay excluded
+    // when the enum is loaded from cache, just as on a full parse
+    assertCachedUnusedMatchesFullParse(
+      Map(
+        "Color.cls" -> "public enum Color {RED, GREEN}",
+        "Foo.cls"   -> "public class Foo { {Color c = Color.RED; System.debug(c == Color.GREEN);} }"
+      ),
+      Seq("Color.cls", "Foo.cls")
+    )
+  }
+
+  test("Method used only from a cache-loaded method body is not flagged (#477)") {
+    // Within a single module, member-level holders are established by propagateDependencies before
+    // recompute, so doWork is held via Client.run()'s body. (The cross-module ripple is covered
+    // separately below where re-validation ordering actually matters.)
+    assertCachedUnusedMatchesFullParse(
+      Map(
+        "Service.cls" -> "public class Service {public void doWork() {}}",
+        "Client.cls"  -> "public class Client {public void run() {new Service().doWork();}}"
+      ),
+      Seq("Service.cls", "Client.cls")
+    )
+  }
+
+  test("Field used only from a cache-loaded method body is not flagged (#477)") {
+    assertCachedUnusedMatchesFullParse(
+      Map(
+        "Holder.cls" -> "public class Holder {public String value;}",
+        "Reader.cls" -> "public class Reader {public void read() {System.debug(new Holder().value);}}"
+      ),
+      Seq("Holder.cls", "Reader.cls")
+    )
+  }
+
+  test("Type used only from a cache-loaded method body is not flagged (#477)") {
+    assertCachedUnusedMatchesFullParse(
+      Map(
+        "Widget.cls"  -> "public class Widget {}",
+        "Factory.cls" -> "public class Factory {public Object make() {return new Widget();}}"
+      ),
+      Seq("Widget.cls", "Factory.cls")
+    )
+  }
+
+  test("Cross-module method use from a cache-loaded body is re-validated (#477)") {
+    // base loads before ext, so when both are cache-loaded Service.doWork is first analysed without
+    // a holder (flagged) and must be re-validated once ext's cache-loaded Client - which uses
+    // doWork only inside a method body - is loaded. This exercises member-level dependency ripple
+    // for summary types, which type-level ripple alone would miss.
+    withManualFlush {
+      FileSystemHelper.run(
+        Map(
+          "sfdx-project.json" -> """{"packageDirectories": [{"path": "base"}, {"path": "ext"}]}""",
+          "base/Service.cls"  -> "public class Service {public void doWork() {}}",
+          "ext/Client.cls"    -> "public class Client {public void run() {new Service().doWork();}}"
+        )
+      ) { root: PathLike =>
+        val servicePath = root.join("base").join("Service.cls")
+
+        def isSummary(org: OPM.OrgImpl, name: String): Boolean =
+          org.unmanaged.orderedModules.exists(m =>
+            m.findModuleType(TypeName(Name(name))).exists(_.isInstanceOf[SummaryDeclaration])
+          )
+
+        // Full parse: doWork is held by Client.run, so it is not flagged
+        val cold = createOrgWithUnused(root)
+        assert(orgIssuesFor(cold, servicePath).isEmpty)
+        cold.flush()
+
+        // Reload: both come from cache; doWork must remain unflagged after cross-module ripple
+        val warm = createOrgWithUnused(root)
+        assert(isSummary(warm, "Service") && isSummary(warm, "Client"))
+        OrgInfo.current.withValue(warm) {
+          assert(orgIssuesFor(warm, servicePath).isEmpty)
         }
       }
     }
@@ -901,7 +1091,7 @@ class UnusedTest extends AnyFunSuite with TestHelper {
       val org = createOrgWithUnused(root)
       assert(
         orgIssuesFor(org, root.join("Dummy.cls"))
-          == s"Unused: line 1 at 39-42: Unused public method 'void foo()', $onlyTestCodeReferenceText\n"
+          == "Unused: line 1 at 39-42: Unused public static method 'void foo()'; only referenced by test code, remove, make private @TestVisible, or add @SuppressWarnings('Unused') with a comment if this is an external entry point\n"
       )
     }
   }
@@ -1669,7 +1859,7 @@ class UnusedTest extends AnyFunSuite with TestHelper {
     FileSystemHelper.run(
       Map(
         "TriggerHandler.cls" -> "public class TriggerHandler { public void handleTrigger() { System.debug('handling'); } }",
-        "MyTrigger.trigger"  -> "trigger MyTrigger on Account (after insert) { (new TriggerHandler()).handleTrigger(); }"
+        "MyTrigger.trigger" -> "trigger MyTrigger on Account (after insert) { (new TriggerHandler()).handleTrigger(); }"
       )
     ) { root: PathLike =>
       createOrgWithUnused(root)
@@ -1687,8 +1877,8 @@ class UnusedTest extends AnyFunSuite with TestHelper {
             |"sourceApiVersion": "60.0"
             |}""".stripMargin,
         "force-app/ITriggerHandler.cls" -> "public interface ITriggerHandler { void handleTrigger(); }",
-        "force-app/TriggerHandler.cls"  -> "public class TriggerHandler implements ITriggerHandler { public void handleTrigger() { System.debug('handling'); } }",
-        "force-app/MyTrigger.trigger"   -> "trigger MyTrigger on Account (after insert) { (new TriggerHandler()).handleTrigger(); }"
+        "force-app/TriggerHandler.cls" -> "public class TriggerHandler implements ITriggerHandler { public void handleTrigger() { System.debug('handling'); } }",
+        "force-app/MyTrigger.trigger" -> "trigger MyTrigger on Account (after insert) { (new TriggerHandler()).handleTrigger(); }"
       )
     ) { root: PathLike =>
       createOrgWithUnused(root)

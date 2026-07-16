@@ -15,7 +15,7 @@
 package com.nawforce.apexlink.cst
 
 import com.nawforce.apexlink.TestHelper
-import com.nawforce.apexlink.api.{ANTLRParser, ServerOps}
+
 import com.nawforce.pkgforce.path.PathLike
 import com.nawforce.runtime.FileSystemHelper
 import org.scalatest.funsuite.AnyFunSuite
@@ -26,12 +26,10 @@ class SwitchTest extends AnyFunSuite with TestHelper {
     FileSystemHelper.run(Map("Dummy.cls" -> "public class Dummy {{switch on 'A' {}}}")) {
       root: PathLike =>
         createOrg(root)
-        val expectedMsg = if (ServerOps.getCurrentParser == ANTLRParser) {
-          "Syntax: line 1 at 36: mismatched input '}' expecting 'when'\nSyntax: line 1 at 38: extraneous input '}' expecting <EOF>\n"
-        } else {
-          "Syntax: line 1 at 36: mismatched input '}' expecting 'when'\n"
-        }
-        assert(getMessages(root.join("Dummy.cls")) == expectedMsg)
+        assert(
+          getMessages(root.join("Dummy.cls")) ==
+            "Syntax: line 1 at 36: mismatched input '}' expecting 'when'\n"
+        )
     }
   }
 
@@ -140,6 +138,52 @@ class SwitchTest extends AnyFunSuite with TestHelper {
     )
   }
 
+  test("Enum qualified control (same enum)") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when E.A {}}}}")
+    assert(!hasIssues)
+  }
+
+  test("Enum qualified control (outer qualified)") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when Dummy.E.A {}}}}")
+    assert(!hasIssues)
+  }
+
+  test("Enum qualified control (bad value)") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when E.BAD {}}}}")
+    assert(
+      dummyIssues ==
+        "Error: line 1 at 58-61: Value must be a enum constant\n"
+    )
+  }
+
+  test("Enum qualified control (wrong enum)") {
+    typeDeclaration(
+      "public class Dummy {enum E {A,B} enum F {A,B} {E e;switch on e {when F.A {}}}}"
+    )
+    assert(
+      dummyIssues ==
+        "Error: line 1 at 69-70: Qualifier 'F' does not match switch expression type 'Dummy.E'\n"
+    )
+  }
+
+  test("Enum qualified control (unknown qualifier)") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when Missing.A {}}}}")
+    assert(
+      dummyIssues ==
+        "Error: line 1 at 56-63: No type declaration found for 'Missing'\n"
+    )
+  }
+
+  test("Enum qualified multi control") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when E.A, E.B {}}}}")
+    assert(!hasIssues)
+  }
+
+  test("Enum qualified mixed unqualified") {
+    typeDeclaration("public class Dummy {enum E {A,B} {E e;switch on e {when A, E.B {}}}}")
+    assert(!hasIssues)
+  }
+
   test("String single control") {
     typeDeclaration("public class Dummy {{switch on 'A' {when 'A' {} }}}")
     assert(!hasIssues)
@@ -173,6 +217,21 @@ class SwitchTest extends AnyFunSuite with TestHelper {
   test("String multi-part control (duplicate)") {
     typeDeclaration("public class Dummy {{switch on 'A' {when 'A', 'A' {} }}}")
     assert(dummyIssues == "Error: line 1 at 31-34: Duplicate when case for 'A'\n")
+  }
+
+  test("Multi-line string single control") {
+    typeDeclaration("public class Dummy {{switch on 'A' {when '''\nA''' {} }}}")
+    assert(!hasIssues)
+  }
+
+  test("Multi-line string control on multi-line expression") {
+    typeDeclaration("public class Dummy {{switch on '''\nA''' {when '''\nA''' {} }}}")
+    assert(!hasIssues)
+  }
+
+  test("Multi-line string mixed control") {
+    typeDeclaration("public class Dummy {{switch on 'A' {when 'A', '''\nB''' {} }}}")
+    assert(!hasIssues)
   }
 
   test("String switch with Null") {

@@ -5,12 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [6.1.0] - 2026-07-03
+
+### Added
+
+- Bound variables are now extracted from SOQL `WHERE FORMULA(...)` comparisons (e.g. `WHERE FORMULA('EndDate - StartDate') > :days`), following the apex-parser WHERE AST split; `FORMULA(...)` remains rejected in `HAVING` (#495)
+- Recognition of Summer '26 test annotations `@IntegrationTest` and `@TearDown`, including test-class and unused-analysis handling (#468)
+- Acceptance of Summer '26 multi-line string literals (`'''...'''`) in expressions and `switch` when clauses (#447)
+- Targeted diagnostic for malformed multi-line string literals such as `'''abc'''` and `''''''`, replacing the generic "mismatched input" syntax error (#443)
+- Qualified enum constants are now permitted in `switch` when clauses (e.g. `when MyEnum.A`) (#441)
+- Distinct exit codes from `CheckForIssues` to separate warnings-only and unused-only outcomes (#440)
+- Improved lexer error messages for invalid escape sequences, including the offending sequence
 
 ### Fixed
 
+- Missing nested Apex type diagnostics now clarify when the outer type exists but the referenced nested type is not declared (#149)
+- Stabilized diagnostic column spans for missing type-reference and duplicate visibility diagnostics, avoiding context-dependent diff churn (#487)
+- Nested subclasses now resolve unqualified names to accessible enclosing static fields before inherited private superclass fields, avoiding false `Field is not visible` diagnostics (#488)
+- Removed use of the deprecated Apex parser `CaseInsensitiveInputStream` from JVM parsing (#489)
+- Private and protected overloaded methods called with ghosted-type arguments no longer report false `Method is not visible` diagnostics (#484)
+- Nested classes extending an externally nested base no longer resolve unqualified static field names through the base class's enclosing type, avoiding false `Field is not visible` diagnostics (#482)
+- Unused method/field/type warnings are now recomputed for cache-loaded classes instead of replaying the cached result, so they reflect actual usage in the current workspace rather than a stale whole-program result captured when the cache was written (#477)
+- Private and protected field/method accesses from unrelated classes are now reported as visibility errors (#474)
+- SOQL queries using deprecated `WITH SECURITY_ENFORCED` now report a warning recommending `WITH USER_MODE` (#466)
+- Private `@TestVisible` methods, fields, and constructors are now only visible from `@IsTest` callers, matching Salesforce visibility rules for non-test and `@IntegrationTest` code (#471)
+- `@IntegrationTest` classes no longer reject ordinary helper members, and calls to `@IntegrationTest` methods from non-integration contexts are reported as warnings instead of deploy-blocking errors (#470)
+- Unused warnings for public static methods now call out their static nature and explain how to document intentional external entry points (#406)
+- Unused warnings for virtual/override method hierarchies now include context when all related overrides are unused (#403)
+- Global interface methods now inherit their containing interface visibility, preventing valid implementations from being incorrectly flagged as unused (#405)
+- Verbose parser diagnostics at end-of-file now report `Unexpected end of input` while preserving concise expected-token messages (#457)
+- Cascading syntax errors after an unclosed method body are now suppressed (#422)
 - Static methods on inner classes are now properly validated and flagged (@metalshark)
 - Public/global methods implementing interfaces from external namespaces are no longer incorrectly flagged as unused (#401)
+- Methods invoked only from triggers are no longer flagged as unused
+- Test class discovery now follows interface use relationships, so test classes referenced via interfaces are correctly included
+- Outline parser column offsets aligned with outline-parser 2.0 0-based half-open columns, removing off-by-one diagnostics
+- Outline parser validation failures now retry via an ANTLR fallback to preserve diagnostics
+
+### Changed
+
+- Upgraded platform types to Salesforce Summer '26 via standard-types and sobject-types 67.0.0
+- Removed the ANTLR-first parsing mode; OutlineParser is now the sole parser path. The `--antlr` / ANTLR parser option is deprecated and a no-op (#433)
+- Upgraded to apex-parser 5.1.0 and the antlr4 4.13 runtime
+- Slimmed the JS module surface to the published apex-ls facades
+- Removed JS-portability shims `CodeParser.toScala(value)` and `CodeParser.getText(...)` from the CST construction layer; call sites now use `Option(...)` directly (#449)
+- Replaced cascading `Option(...).orElse(...)` chains in `Literal.construct` and `ClassBodyDeclaration.construct` with extractor-based pattern matching (#449)
+
+### Deprecated
+
+- The npm distribution (`@apexdevtools/apex-ls`) is no longer published by default and is planned for removal; the JVM artifact on Maven Central is the supported distribution. Contact the maintainers if you still require an npm build.
+
+### Removed
+
+- MCP server support and packaging (#454)
+- v1 ForceIgnore implementation (V2 has been the default since 6.0.0)
+
+### Security
+
+- Upgraded the JS runtime's `@xmldom/xmldom` dependency from 0.7.9 to 0.8.13, clearing several XML serialization-injection and denial-of-service advisories
 
 ## [6.0.2] - 2025-11-25
 

@@ -67,7 +67,9 @@ class StreamDeployer(
 
     // Run plugins over loaded types DependentTypes
     // This has to be done post loading to allow dependencies to be established
-    module.pkg.org.pluginsManager.closePlugins()
+    LoggerOps.infoTime("Closed plugins (unused analysis)", types.size > basicTypesSize) {
+      module.pkg.org.pluginsManager.closePlugins()
+    }
 
     // Report progress and tidy up
     if (types.size > basicTypesSize) {
@@ -132,14 +134,9 @@ class StreamDeployer(
       docs.filterNot(doc => types.contains(TypeName(doc.name).withNamespace(module.namespace)))
     LoggerOps.debug(s"${missingClasses.length} of ${docs.length} classes not available from cache")
 
-    module.pkg.org.getParserType match {
-      case ANTLRParser =>
-        parseAndValidateClasses(missingClasses)
-      case OutlineParserSingleThreaded | OutlineParserMultithreaded =>
-        val failures = loadClassesWithOutlineParser(ServerOps.getCurrentParser, missingClasses)
-        if (failures.nonEmpty)
-          parseAndValidateClasses(failures)
-    }
+    val failures = loadClassesWithOutlineParser(module.pkg.org.getParserType, missingClasses)
+    if (failures.nonEmpty)
+      parseAndValidateClasses(failures)
   }
 
   /** Parse a collection of Apex classes, insert them and validate them. */
@@ -197,17 +194,24 @@ class StreamDeployer(
       LoggerOps.info(s"Used $rejectCycles rejection cycles")
 
     // For those not rejected, complete processing
-    classes
-      .filterNot(rejected.contains)
-      .foreach(cls => {
-        // Re-establish dependencies
-        cls.declaration.propagateOuterDependencies(typeCache)
-        cls.declaration.propagateDependencies()
+    val survivors = classes.filterNot(rejected.contains)
+    survivors.foreach(cls => {
+      // Re-establish dependencies
+      cls.declaration.propagateOuterDependencies(typeCache)
+      cls.declaration.propagateDependencies()
 
-        // Report any (existing) diagnostics
-        val path = cls.declaration.location.path
-        cls.diagnostics.foreach(diagnostic => module.pkg.org.issues.add(Issue(path, diagnostic)))
-      })
+      // Report any (existing) diagnostics
+      val path = cls.declaration.location.path
+      cls.diagnostics.foreach(diagnostic => module.pkg.org.issues.add(Issue(path, diagnostic)))
+    })
+
+    // Seed cache-loaded classes into the plugin manager so holder-based unused analysis is
+    // recomputed for them in this workspace (UnusedPlugin.onSummaryValidated) during closePlugins,
+    // rather than replaying the workspace-dependent cached result (issue #477).
+    if (survivors.nonEmpty) {
+      survivors.foreach(cls => module.pkg.org.pluginsManager.createPlugin(cls.declaration))
+      LoggerOps.debug(s"Seeded ${survivors.length} cache-loaded classes for unused recompute")
+    }
   }
 
   /** Load classes from the code cache as types returning TypeNames of those available. Benchmarking
@@ -250,6 +254,7 @@ class StreamDeployer(
   ): ArraySeq[ClassDocument] = {
 
     val localAccum      = new ConcurrentHashMap[TypeName, FullDeclaration]()
+    val docsByType      = new ConcurrentHashMap[TypeName, ClassDocument]()
     val failedDocuments = new ConcurrentLinkedQueue[ClassDocument]()
 
     val clsItr =
@@ -266,6 +271,7 @@ class StreamDeployer(
                 .toFullDeclaration(cls, srcData, module)
                 .map(td => {
                   localAccum.put(td.typeName, td)
+                  docsByType.put(td.typeName, cls)
                 })
               if (td.isEmpty) failedDocuments.add(cls)
             }
@@ -274,7 +280,15 @@ class StreamDeployer(
       localAccum.entrySet.forEach(kv => {
         types.put(kv.getKey, kv.getValue)
       })
-      localAccum.values().asScala.foreach(_.safeValidate())
+      localAccum
+        .values()
+        .asScala
+        .foreach(td => {
+          if (!td.tryValidate()) {
+            types.remove(td.typeName)
+            Option(docsByType.get(td.typeName)).foreach(failedDocuments.add)
+          }
+        })
     }
     ArraySeq.from(failedDocuments.asScala.toSeq)
   }

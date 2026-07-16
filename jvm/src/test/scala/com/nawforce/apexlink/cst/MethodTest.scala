@@ -64,6 +64,202 @@ class MethodTest extends AnyFunSuite with TestHelper {
     assert(dummyIssues.isEmpty)
   }
 
+  test("Unrelated class can not call private static method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {private static void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy {public static void f2() {Target.helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Method is not visible"))
+  }
+
+  test("Unrelated class can not call private instance method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {private void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy {public void f2(Target target) {target.helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Method is not visible"))
+  }
+
+  test("Unrelated class can not call protected instance method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {protected void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy {public void f2(Target target) {target.helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Method is not visible"))
+  }
+
+  test("Subclass can call protected instance method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {protected void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy extends Target {public void f2() {helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Subclass can not resolve private instance method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {private void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy extends Target {public void f2() {helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("No matching method found"))
+  }
+
+  test("Same file class can call private method") {
+    typeDeclaration(
+      "public class Dummy {private static void helper(){} public class Inner {public void f2() {Dummy.helper();}}}"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
+  test("IntegrationTest method called from IntegrationTest method") {
+    typeDeclaration(
+      "@IntegrationTest public class Dummy {@IntegrationTest static void f1(){} @IntegrationTest static void f2() {f1();} }"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
+  test("IntegrationTest method called from IsTest method") {
+    typeDeclarations(
+      Map(
+        "IntegrationDummy.cls" -> "@IntegrationTest public class IntegrationDummy {@IntegrationTest public static void f1(){}}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {IntegrationDummy.f1();}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Warning: line 1 at 61-82: @IntegrationTest methods can only be called from @IntegrationTest methods\n"
+    )
+  }
+
+  test("IntegrationTest method called from non-test context") {
+    typeDeclarations(
+      Map(
+        "TestDummy.cls" -> "@IntegrationTest public class TestDummy {@IntegrationTest public static void f1(){}}",
+        "Dummy.cls" -> "public class Dummy {public static void f2() {TestDummy.f1();}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Warning: line 1 at 45-59: @IntegrationTest methods can only be called from @IntegrationTest methods\n"
+    )
+  }
+
+  test("IntegrationTest method called from IntegrationTest class helper") {
+    typeDeclaration(
+      "@IntegrationTest public class Dummy {@IntegrationTest static void f1(){} static void f2() {f1();} }"
+    )
+    assert(
+      dummyIssues == "Warning: line 1 at 91-95: @IntegrationTest methods can only be called from @IntegrationTest methods\n"
+    )
+  }
+
+  test("IntegrationTest class can contain ordinary members") {
+    typeDeclaration(
+      "@IntegrationTest public class Dummy {static Integer counter = 0; String label; private Dummy(String label) {this.label = label;} static Integer helper() {counter += 1; return counter;} class InnerHelper {String value(String input) {return input;}} @IntegrationTest static void testA() {System.assert(true);} @TearDown static void cleanup() {}}"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
+  test("IntegrationTest can not access private TestVisible method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static void helper(){}}",
+        "Dummy.cls" -> "@IntegrationTest public class Dummy {@IntegrationTest public static void f2() {Target.helper();}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Error: line 1 at 79-94: Private @TestVisible methods can only be accessed from @IsTest classes\n"
+    )
+  }
+
+  test("Non-test class can not access private TestVisible method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static void helper(){}}",
+        "Dummy.cls"  -> "public class Dummy {public static void f2() {Target.helper();}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Error: line 1 at 45-60: Private @TestVisible methods can only be accessed from @IsTest classes\n"
+    )
+  }
+
+  test("IsTest class can access private TestVisible method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static void helper(){}}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {Target.helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("IsTest class can access protected TestVisible method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {@TestVisible protected static void helper(){}}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {Target.helper();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Nested class in IsTest class can access private TestVisible method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static void helper(){}}",
+        "Dummy.cls" -> "@IsTest public class Dummy {private class Inner {public void f2() {Target.helper();}}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Same file class can access private TestVisible method") {
+    typeDeclaration(
+      "public class Dummy {@TestVisible private static void helper(){} public class Inner {public void f2() {Dummy.helper();}}}"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
+  test("IsTest class can call @TestVisible private interface method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private interface IThing {void run();} @TestVisible private static IThing make(){return null;}}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {Target.IThing t = Target.make(); t.run();}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Non-test class can not call @TestVisible private interface method") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private interface IThing {void run();} @TestVisible private static IThing make(){return null;}}",
+        "Dummy.cls" -> "public class Dummy {public static void f2() {Target.IThing t = Target.make(); t.run();}}"
+      )
+    )
+    assert(
+      getMessages(root.join("Dummy.cls"))
+        .contains("Private @TestVisible methods can only be accessed from @IsTest classes")
+    )
+  }
+
   test("Method call with non-ambiguous target") {
     FileSystemHelper.run(
       Map(
@@ -463,6 +659,35 @@ class MethodTest extends AnyFunSuite with TestHelper {
             | // Legal as should return an Any as we don't know which 'publish' was intended
             |String b = EventBus.publish(a); } }
             |""".stripMargin
+      )
+    ) { root: PathLike =>
+      createHappyOrg(root)
+    }
+  }
+
+  test("Same class private overloaded method call with ghosted argument") {
+    // The ghosted argument resolves to Any, so overload resolution wraps the chosen method in an
+    // AnyReturnMethodDeclaration. That wrapper must remain transparent to the method's identity,
+    // otherwise a legal same-file private call is wrongly reported as 'Method is not visible'.
+    FileSystemHelper.run(
+      Map(
+        "sfdx-project.json" ->
+          """{
+          |"packageDirectories": [{"path": "force-app"}],
+          |"plugins": {"dependencies": [{"namespace": "ext"}]}
+          |}""".stripMargin,
+        "force-app/Dummy.cls" ->
+          """public class Dummy {
+            |  public void run(ext.Something thing) {
+            |    getStatus(thing);
+            |  }
+            |  private static String getStatus(ext.Something thing) {
+            |    return getStatus(thing.status);
+            |  }
+            |  private static String getStatus(String status) {
+            |    return status;
+            |  }
+            |}""".stripMargin
       )
     ) { root: PathLike =>
       createHappyOrg(root)

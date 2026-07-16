@@ -16,7 +16,7 @@ package com.nawforce.apexlink.cst
 
 import com.nawforce.apexlink.cst.stmts.{ControlFlowContext, OuterControlFlowContext}
 import com.nawforce.apexlink.diagnostics.IssueOps
-import com.nawforce.apexlink.finding.TypeResolver
+import com.nawforce.apexlink.finding.{MissingType, TypeError, TypeResolver}
 import com.nawforce.apexlink.finding.TypeResolver.TypeResponse
 import com.nawforce.apexlink.memory.SkinnySet
 import com.nawforce.apexlink.names.TypeNames
@@ -75,6 +75,9 @@ trait VerifyContext {
   /** Test predicate returns true for a modifier on the containing scope */
   def modifiers(pred: Modifier => Boolean): Boolean = parent().exists(_.modifiers(pred))
 
+  /** Test predicate returns true for a modifier on the containing body declaration. */
+  def bodyModifiers(pred: Modifier => Boolean): Boolean = parent().exists(_.bodyModifiers(pred))
+
   /** Test if issues are currently being suppressed */
   def suppressIssues: Boolean = disableIssueDepth != 0 || parent().exists(_.suppressIssues)
 
@@ -92,7 +95,19 @@ trait VerifyContext {
 
   def missingType(location: PathLocation, typeName: TypeName): Unit = {
     if (!module.isGulped && !module.isGhostedType(typeName) && !suppressIssues)
-      OrgInfo.log(IssueOps.noTypeDeclaration(location, typeName))
+      OrgInfo.log(IssueOps.noTypeDeclaration(location, typeName, isApexType))
+  }
+
+  def typeErrorIssue(location: PathLocation, error: TypeError): Issue = {
+    error match {
+      case MissingType(typeName) =>
+        IssueOps.noTypeDeclaration(location, typeName, isApexType)
+      case _ => error.asIssue(location)
+    }
+  }
+
+  def logTypeError(location: PathLocation, error: TypeError): Unit = {
+    log(typeErrorIssue(location, error))
   }
 
   def missingIdentifier(location: PathLocation, typeName: TypeName, name: Name): Unit = {
@@ -113,6 +128,10 @@ trait VerifyContext {
   def log(issue: Issue): Unit = {
     if (!suppressIssues)
       OrgInfo.log(issue)
+  }
+
+  private def isApexType(typeName: TypeName): Boolean = {
+    getTypeFor(typeName, thisType).toOption.exists(_.isInstanceOf[ApexDeclaration])
   }
 }
 
@@ -275,6 +294,9 @@ final class BodyDeclarationVerifyContext(
 
   override def modifiers(pred: Modifier => Boolean): Boolean =
     classBodyDeclaration.modifiers.exists(pred) || super.modifiers(pred)
+
+  override def bodyModifiers(pred: Modifier => Boolean): Boolean =
+    classBodyDeclaration.modifiers.exists(pred)
 
   override def suppressIssues: Boolean =
     classBodyDeclaration.modifiers.contains(SUPPRESS_WARNINGS_ANNOTATION_PMD) ||

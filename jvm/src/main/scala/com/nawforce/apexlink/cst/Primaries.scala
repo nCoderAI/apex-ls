@@ -19,8 +19,9 @@ import com.nawforce.apexlink.org.Referenceable
 import com.nawforce.apexlink.types.apex.{ApexClassDeclaration, ApexFieldLike}
 import com.nawforce.apexlink.types.core.{FieldDeclaration, TypeDeclaration}
 import com.nawforce.apexlink.types.platform.PlatformTypes
+import com.nawforce.pkgforce.diagnostics.{Issue, WARNING_CATEGORY}
 import com.nawforce.pkgforce.names._
-import com.nawforce.pkgforce.path.Location
+import com.nawforce.pkgforce.path.{Location, PathLocation}
 import com.nawforce.runtime.parsers.CodeParser
 import io.github.apexdevtools.apexparser.ApexParser._
 import io.github.apexdevtools.apexparser.ApexParserBaseVisitor
@@ -146,9 +147,13 @@ final case class IdPrimary(id: Id) extends Primary {
     val staticContext = Some(true).filter(input.isStatic.contains)
 
     val field = findField(id.name, td, staticContext)
+      .flatMap(field => fallbackToOuterStaticField(id.name, td, staticContext, field, context))
     cachedClassFieldDeclaration = field
 
     if (field.nonEmpty && isAccessible(td, field.get, staticContext)) {
+      TestVisibleAccess
+        .fieldAccessError(field.get, context.thisType)
+        .foreach(context.logError(location, _))
       Referenceable.addReferencingLocation(field.get, location, context.thisType)
       context.addDependency(field.get)
       Some(
@@ -190,6 +195,35 @@ final case class IdPrimary(id: Id) extends Primary {
       })
   }
 
+  private def fallbackToOuterStaticField(
+    name: Name,
+    td: TypeDeclaration,
+    staticContext: Option[Boolean],
+    field: FieldDeclaration,
+    context: ExpressionVerifyContext
+  ): Option[FieldDeclaration] = {
+    TestVisibleAccess.fieldAccessError(field, context.thisType) match {
+      case Some(message) if message == s"Field is not visible: ${field.name}" =>
+        findOuterStaticField(name, td, staticContext).orElse(Some(field))
+      case _ => Some(field)
+    }
+  }
+
+  private def findOuterStaticField(
+    name: Name,
+    td: TypeDeclaration,
+    staticContext: Option[Boolean]
+  ): Option[FieldDeclaration] = {
+    val encodedName   = EncodedName(name)
+    val namespaceName = encodedName.defaultNamespace(td.moduleDeclaration.flatMap(_.namespace))
+    td.findOuterStaticField(namespaceName.fullName, staticContext)
+      .orElse({
+        if (encodedName != namespaceName)
+          td.findOuterStaticField(encodedName.fullName, staticContext)
+        else None
+      })
+  }
+
   private def isAccessible(
     td: TypeDeclaration,
     field: FieldDeclaration,
@@ -218,7 +252,8 @@ case object AGGREGATE_RESULT_QUERY extends QueryResultType
 final case class SOQL(
   queryResultType: QueryResultType,
   fromNames: Array[DotName],
-  boundExpressions: ArraySeq[Expression]
+  boundExpressions: ArraySeq[Expression],
+  deprecatedSecurityEnforcedLocation: Option[PathLocation]
 ) extends Primary {
 
   override def verify(input: ExprContext, context: ExpressionVerifyContext): ExprContext = {
@@ -227,12 +262,28 @@ final case class SOQL(
       expr.verify(input, context)
     })
 
+    deprecatedSecurityEnforcedLocation.foreach(location =>
+      context.log(
+        Issue(
+          WARNING_CATEGORY,
+          location,
+          "WITH SECURITY_ENFORCED is deprecated, use WITH USER_MODE instead"
+        )
+      )
+    )
+
     if (fromNames.length != 1 || fromNames.head.names.size != 1) {
       context.logError(
         location,
         s"Expecting SOQL to query only a single SObject, found '${fromNames.mkString(", ")}'"
       )
     }
+
+    // Guard against a malformed query that yielded no FROM names; nothing more we can verify
+    if (fromNames.isEmpty) {
+      return ExprContext(isStatic = Some(false), context.module.any)
+    }
+
     val sobjectType = TypeName(fromNames.head.names.head, Nil, Some(TypeNames.Schema))
 
     if (queryResultType == COUNT_RESULT_QUERY) {
@@ -257,30 +308,29 @@ final case class SOQL(
 
 object SOQL {
   def apply(query: QueryContext): SOQL = {
-    val entries = CodeParser
-      .toScala(query.selectList().selectEntry())
+    val entries = Option(query.selectList())
+      .map(selectList => CodeParser.toScala(selectList.selectEntry()))
+      .getOrElse(ArraySeq.empty[SelectEntryContext])
 
     val aggregateFunctions = entries
-      .flatMap(se => CodeParser.toScala(se.soqlFunction()))
+      .flatMap(se => Option(se.soqlFunction()))
       .filter(fn =>
-        CodeParser.toScala(fn.AVG()).nonEmpty ||
-          CodeParser.toScala(fn.COUNT()).nonEmpty ||
-          CodeParser.toScala(fn.COUNT_DISTINCT()).nonEmpty ||
-          CodeParser.toScala(fn.MIN()).nonEmpty ||
-          CodeParser.toScala(fn.MAX()).nonEmpty ||
-          CodeParser.toScala(fn.SUM()).nonEmpty
+        Option(fn.AVG()).nonEmpty ||
+          Option(fn.COUNT()).nonEmpty ||
+          Option(fn.COUNT_DISTINCT()).nonEmpty ||
+          Option(fn.MIN()).nonEmpty ||
+          Option(fn.MAX()).nonEmpty ||
+          Option(fn.SUM()).nonEmpty
       )
-    val countFunctions = aggregateFunctions.filter(fn => CodeParser.toScala(fn.COUNT()).nonEmpty)
+    val countFunctions = aggregateFunctions.filter(fn => Option(fn.COUNT()).nonEmpty)
     val emptyCountFunctions =
-      countFunctions.filter(fn => CodeParser.toScala(fn.fieldName()).isEmpty)
+      countFunctions.filter(fn => Option(fn.fieldName()).isEmpty)
 
     val resultType =
       if (entries.size == 1 && emptyCountFunctions.size == 1) {
         // Count queries are only valid for 'Select Count() From...', otherwise assume is aggregate
         COUNT_RESULT_QUERY
-      } else if (
-        CodeParser.toScala(query.groupByClause()).nonEmpty || aggregateFunctions.nonEmpty
-      ) {
+      } else if (Option(query.groupByClause()).nonEmpty || aggregateFunctions.nonEmpty) {
         AGGREGATE_RESULT_QUERY
       } else {
         LIST_RESULT_QUERY
@@ -290,12 +340,23 @@ object SOQL {
     // is available so currently model as an expression
     val boundedExpressions = new BoundExprVisitor().visit(query).map(ec => Expression.construct(ec))
     val fromNames =
-      CodeParser
-        .toScala(query.fromNameList().fieldName())
+      Option(query.fromNameList())
+        .map(fromNameList => CodeParser.toScala(fromNameList.fieldName()))
+        .getOrElse(ArraySeq.empty[FieldNameContext])
         .map(nameList =>
-          DotName(CodeParser.toScala(nameList.soqlId()).map(name => Name(CodeParser.getText(name))))
+          DotName(
+            CodeParser
+              .toScala(nameList.soqlId())
+              .map(name => Name(Option(name).map(_.getText).getOrElse("")))
+          )
         )
-    new SOQL(resultType, fromNames.toArray, boundedExpressions)
+
+    val deprecatedSecurityEnforcedLocation =
+      Option(query.withClause())
+        .filter(withClause => Option(withClause.SECURITY_ENFORCED()).nonEmpty)
+        .map(withClause => CST.sourceContext.value.get.getLocation(withClause))
+
+    new SOQL(resultType, fromNames.toArray, boundedExpressions, deprecatedSecurityEnforcedLocation)
   }
 }
 

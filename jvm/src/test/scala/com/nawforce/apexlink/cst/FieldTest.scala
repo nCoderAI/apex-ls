@@ -81,6 +81,63 @@ class FieldTest extends AnyFunSuite with TestHelper {
     assert(dummyIssues == "Error: line 1 at 38-49: protected field 'foo' cannot be static\n")
   }
 
+  test("Unrelated class can not access private static field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {private static String helper;}",
+        "Dummy.cls" -> "public class Dummy {public static void f2() {String value = Target.helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Field is not visible"))
+  }
+
+  test("Unrelated class can not access private instance field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {private String helper;}",
+        "Dummy.cls" -> "public class Dummy {public void f2(Target target) {String value = target.helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Field is not visible"))
+  }
+
+  test("Unrelated class can not access protected instance field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {protected String helper;}",
+        "Dummy.cls" -> "public class Dummy {public void f2(Target target) {String value = target.helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Field is not visible"))
+  }
+
+  test("Subclass can access protected instance field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {protected String helper;}",
+        "Dummy.cls" -> "public class Dummy extends Target {public void f2() {String value = helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Subclass can not access private instance field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {private String helper;}",
+        "Dummy.cls" -> "public class Dummy extends Target {public void f2() {String value = helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).contains("Field is not visible"))
+  }
+
+  test("Same file class can access private field") {
+    typeDeclaration(
+      "public class Dummy {private static String helper; public class Inner {public void f2() {String value = Dummy.helper;}}}"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
   test("Potentially recursive field lookup") {
     // The search order for 'a' here is Inner -> (Outer)Dummy -> (Superclass)Inner -> (Outer)Dummy
     // Unless we step in to stop the recursion by avoiding a repeat search of Inner
@@ -97,6 +154,158 @@ class FieldTest extends AnyFunSuite with TestHelper {
     assert(
       dummyIssues == "Missing: line 3 at 17-18: No variable or type found for 'a' on 'Dummy.Inner'\n"
     )
+  }
+
+  test("IntegrationTest can not access private TestVisible field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static String helper;}",
+        "Dummy.cls" -> "@IntegrationTest public class Dummy {@IntegrationTest public static void f2() {String value = Target.helper;}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Error: line 1 at 94-107: Private @TestVisible fields can only be accessed from @IsTest classes\n"
+    )
+  }
+
+  test("Non-test class can not access private TestVisible field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static String helper;}",
+        "Dummy.cls" -> "public class Dummy {public static void f2() {String value = Target.helper;}}"
+      )
+    )
+    assert(
+      getMessages(
+        root.join("Dummy.cls")
+      ) == "Error: line 1 at 60-73: Private @TestVisible fields can only be accessed from @IsTest classes\n"
+    )
+  }
+
+  test("IsTest class can access private TestVisible field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static String helper;}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {String value = Target.helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("IsTest class can access protected TestVisible field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public virtual class Target {@TestVisible protected static String helper;}",
+        "Dummy.cls" -> "@IsTest public class Dummy {@IsTest public static void f2() {String value = Target.helper;}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Nested class in IsTest class can access private TestVisible field") {
+    typeDeclarations(
+      Map(
+        "Target.cls" -> "public class Target {@TestVisible private static String helper;}",
+        "Dummy.cls" -> "@IsTest public class Dummy {private class Inner {public void f2() {String value = Target.helper;}}}"
+      )
+    )
+    assert(getMessages(root.join("Dummy.cls")).isEmpty)
+  }
+
+  test("Same file class can access private TestVisible field") {
+    typeDeclaration(
+      "public class Dummy {@TestVisible private static String helper; public class Inner {public void f2() {String value = Dummy.helper;}}}"
+    )
+    assert(dummyIssues.isEmpty)
+  }
+
+  test("Nested class resolves enclosing static field over superclass enclosing field") {
+    typeDeclarations(
+      Map(
+        "BaseFramework.cls" ->
+          """public class BaseFramework {
+            |  private static final String NAMESPACE = 'base__';
+            |
+            |  public abstract class BaseConfig {
+            |    public abstract void setup();
+            |  }
+            |}""".stripMargin,
+        "Consumer.cls" ->
+          """public class Consumer {
+            |  private static final String NAMESPACE = 'acme__';
+            |
+            |  public class Configuration extends BaseFramework.BaseConfig {
+            |    public override void setup() {
+            |      String objName = NAMESPACE + 'MyObject__c';
+            |      System.debug(objName);
+            |    }
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assert(getMessages(root.join("Consumer.cls")).isEmpty)
+  }
+
+  test("Nested subclass resolves enclosing static field over inherited private field") {
+    typeDeclarations(
+      Map(
+        "Base1.cls" ->
+          """public virtual class Base1 {
+            |  private final Integer bec;
+            |  public Base1(Integer bec) {
+            |    this.bec = bec;
+            |  }
+            |}""".stripMargin,
+        "Outer1.cls" ->
+          """public class Outer1 {
+            |  private static final Integer BEC = 5;
+            |
+            |  public class Inner1 extends Base1 {
+            |    public Inner1() {
+            |      super(BEC);
+            |    }
+            |
+            |    public Integer value() {
+            |      return BEC;
+            |    }
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assert(getMessages(root.join("Outer1.cls")).isEmpty)
+  }
+
+  test("Nested class resolves unqualified static through superclass enclosing type") {
+    // Verified against the platform: a nested class extending an externally nested base may
+    // resolve an unqualified static field name through the base class's enclosing type when
+    // there is no name in scope to shadow it (e.g. ffhttp_OAuthClient referencing
+    // ffhttp_Client.REQUEST_METHOD_POST from a subclass of ffhttp_Client.AbstractClientRequest).
+    typeDeclarations(
+      Map(
+        "BaseFramework.cls" ->
+          """public class BaseFramework {
+            |  public static final String REQUEST_METHOD_POST = 'POST';
+            |
+            |  public abstract class BaseRequest {
+            |    public String method;
+            |    public BaseRequest(String requestMethod) {
+            |      this.method = requestMethod;
+            |    }
+            |  }
+            |}""".stripMargin,
+        "Consumer.cls" ->
+          """public class Consumer {
+            |  public class ExchangeRequest extends BaseFramework.BaseRequest {
+            |    public ExchangeRequest() {
+            |      super(REQUEST_METHOD_POST);
+            |    }
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assert(getMessages(root.join("Consumer.cls")).isEmpty)
   }
 
 }

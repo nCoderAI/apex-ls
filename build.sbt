@@ -1,14 +1,15 @@
 import org.scalajs.linker.interface.Report
 
 import scala.sys.process._
+import scala.util.Try
 
-ThisBuild / scalaVersion         := "2.13.16"
+ThisBuild / scalaVersion         := "2.13.17"
 ThisBuild / description          := "Salesforce Apex static analysis toolkit"
 ThisBuild / organization         := "io.github.apex-dev-tools"
 ThisBuild / organizationHomepage := Some(url("https://github.com/apex-dev-tools/apex-ls"))
 ThisBuild / homepage             := Some(url("https://github.com/apex-dev-tools/apex-ls"))
 ThisBuild / licenses := List(
-  "BSD-3-Clause" -> new URL("https://opensource.org/licenses/BSD-3-Clause")
+  "BSD-3-Clause" -> url("https://opensource.org/licenses/BSD-3-Clause")
 )
 ThisBuild / developers := List(
   Developer(
@@ -43,7 +44,7 @@ lazy val apexls = crossProject(JSPlatform, JVMPlatform)
     name := "apex-ls",
     scalacOptions += "-deprecation",
     libraryDependencies ++= Seq(
-      "io.github.apex-dev-tools" %%% "outline-parser"                         % "1.3.0",
+      "io.github.apex-dev-tools" %%% "outline-parser"                         % "2.0.0",
       "com.github.nawforce"      %%% "scala-json-rpc"                         % "1.1.0",
       "com.github.nawforce"      %%% "scala-json-rpc-upickle-json-serializer" % "1.1.0",
       "com.lihaoyi"              %%% "upickle"                                % "1.2.0",
@@ -56,14 +57,15 @@ lazy val apexls = crossProject(JSPlatform, JVMPlatform)
   .jvmSettings(
     build       := buildJVM.value,
     Test / fork := true,
+    Test / javaOptions ++= enableNativeAccessForJdk24Plus.value,
     libraryDependencies ++= Seq(
       "org.scala-lang.modules"  %% "scala-xml"                      % "1.3.0",
       "org.scala-lang.modules"  %% "scala-parallel-collections"     % "1.0.0",
       "org.scala-js"            %% "scalajs-stubs"                  % "1.0.0",
-      "io.github.apex-dev-tools" % "apex-parser"                    % "4.3.1",
-      "io.github.apex-dev-tools" % "vf-parser"                      % "1.1.0",
-      "io.github.apex-dev-tools" % "sobject-types"                  % "65.0.0",
-      "io.github.apex-dev-tools" % "standard-types"                 % "65.0.0",
+      "io.github.apex-dev-tools" % "apex-parser"                    % "5.1.0",
+      "io.github.apex-dev-tools" % "vf-parser"                      % "2.0.0",
+      "io.github.apex-dev-tools" % "sobject-types"                  % "67.0.0",
+      "io.github.apex-dev-tools" % "standard-types"                 % "67.0.0",
       "io.methvin"              %% "directory-watcher-better-files" % "0.18.0",
       "com.github.nawforce"      % "uber-apex-jorje"                % "1.0.0" % Test,
       "com.google.jimfs"         % "jimfs"                          % "1.1"   % Test
@@ -172,5 +174,21 @@ def run(log: ProcessLogger)(cmd: String, cwd: File): Unit = {
   if (exitCode > 0) {
     log.err(s"Process exited with non-zero exit code: $exitCode")
     sys.exit(exitCode)
+  }
+}
+
+def enableNativeAccessForJdk24Plus: Def.Initialize[Seq[String]] = Def.setting {
+  sys.props
+    .get("java.specification.version")
+    .flatMap(javaMajorVersion)
+    .filter(_ >= 24)
+    .fold(Seq.empty[String])(_ => Seq("--enable-native-access=ALL-UNNAMED"))
+}
+
+def javaMajorVersion(version: String): Option[Int] = {
+  val parts = version.split("[._-]")
+  parts.headOption.flatMap {
+    case "1" => parts.lift(1).flatMap(part => Try(part.toInt).toOption)
+    case part => Try(part.toInt).toOption
   }
 }

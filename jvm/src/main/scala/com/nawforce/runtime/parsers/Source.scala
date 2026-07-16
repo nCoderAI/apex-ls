@@ -16,7 +16,6 @@ package com.nawforce.runtime.parsers
 import com.nawforce.pkgforce.path.{Location, PathLike, PathLocation, Positionable}
 import com.nawforce.runtime.SourceBlob
 import com.nawforce.runtime.parsers.CodeParser.ParserRuleContext
-import io.github.apexdevtools.apexparser.CaseInsensitiveInputStream
 import org.antlr.v4.runtime.CharStream
 
 /** A block of source code loaded from a file
@@ -54,7 +53,7 @@ case class Source(
     code.asStream
   }
 
-  def asInsensitiveStream: CaseInsensitiveInputStream = {
+  def asInsensitiveStream: CharStream = {
     code.asInsensitiveStream
   }
 
@@ -65,7 +64,7 @@ case class Source(
   /** Find a location for a rule, adapts based on source offsets to give absolute position in file
     */
   def getLocation(context: ParserRuleContext): PathLocation = {
-    val stop = CodeParser.toScala(context.stop).getOrElse(context.start)
+    val stop = Option(context.stop).getOrElse(context.start)
     PathLocation(
       path,
       adjustLocation(
@@ -84,27 +83,29 @@ case class Source(
       return location
     }
 
-    val startLine     = location.startLine
+    // The column offset only applies to content on the first line of the fragment, where the
+    // fragment does not start at column 0. The line offset applies throughout, mapping the
+    // fragment-relative line back to its absolute position in the file (consistent with
+    // stampLocation, which is used for normal CST node locations).
     var startPosition = location.startPosition
     if (location.startLine == 1)
       startPosition += columnOffset
 
-    val endLine     = location.endLine
     var endPosition = location.endPosition
     if (location.endLine == 1)
       endPosition += columnOffset
 
-    Location(startLine, startPosition, endLine, endPosition)
+    Location(
+      location.startLine + lineOffset,
+      startPosition,
+      location.endLine + lineOffset,
+      endPosition
+    )
   }
 
   def stampLocation(positionable: Positionable, context: ParserRuleContext): Unit = {
-    // This is debug for https://github.com/nawforce/apex-link/issues/90
-    if (context.stop == null) {
-      val startLine = if (context.start == null) "null" else context.start.getLine
-      throw new Exception(
-        s"Apex parser context missing stop location, context at line $startLine, type ${context.getClass}"
-      )
-    }
+    val stop       = Option(context.stop).getOrElse(context.start)
+    val stopLength = Option(stop.getText).fold(0)(_.length)
 
     positionable.setLocation(
       path,
@@ -113,11 +114,11 @@ case class Source(
         context.start.getCharPositionInLine + columnOffset
       else
         context.start.getCharPositionInLine,
-      context.stop.getLine + lineOffset,
-      if (context.stop.getLine == 1)
-        context.stop.getCharPositionInLine + context.stop.getText.length + columnOffset
+      stop.getLine + lineOffset,
+      if (stop.getLine == 1)
+        stop.getCharPositionInLine + stopLength + columnOffset
       else
-        context.stop.getCharPositionInLine + context.stop.getText.length
+        stop.getCharPositionInLine + stopLength
     )
   }
 }

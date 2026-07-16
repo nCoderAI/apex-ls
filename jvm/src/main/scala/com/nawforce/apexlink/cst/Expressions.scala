@@ -26,6 +26,7 @@ import com.nawforce.apexlink.types.other.{AnyDeclaration, RecordSetDeclaration}
 import com.nawforce.apexlink.types.platform.{PlatformTypeDeclaration, PlatformTypes}
 import com.nawforce.apexlink.types.synthetic.CustomConstructorDeclaration
 import com.nawforce.pkgforce.diagnostics.{ERROR_CATEGORY, Issue, WARNING_CATEGORY}
+import com.nawforce.pkgforce.modifiers.INTEGRATION_TEST_ANNOTATION
 import com.nawforce.pkgforce.names.{EncodedName, Name, Names, TypeName}
 import com.nawforce.pkgforce.path.{Locatable, Location, PathLocation}
 import com.nawforce.runtime.parsers.CodeParser
@@ -442,6 +443,9 @@ final case class DotExpressionWithId(expression: Expression, safeNavigation: Boo
     val field: Option[FieldDeclaration] =
       DotExpression.findField(name, inputType, context.module, input.isStatic)
     if (field.nonEmpty) {
+      TestVisibleAccess
+        .fieldAccessError(field.get, context.thisType)
+        .foreach(context.logError(location, _))
       context.addDependency(field.get)
       if (input.isStatic.contains(true) && !field.get.thisTypeIdOpt.contains(context.typeId))
         Referenceable.addReferencingLocation(inputType, field.get, location, context.thisType)
@@ -606,6 +610,21 @@ final case class MethodCallWithId(target: Id, arguments: ArraySeq[Expression]) e
     callee.findMethod(target.name, argTypes, staticContext, context) match {
       case Right(method) =>
         cachedMethod = Some(method)
+        TestVisibleAccess
+          .methodAccessError(method, context.thisType)
+          .foreach(context.logError(location, _))
+        if (
+          method.modifiers.contains(INTEGRATION_TEST_ANNOTATION) &&
+          !context.bodyModifiers(_ == INTEGRATION_TEST_ANNOTATION)
+        ) {
+          context.log(
+            Issue(
+              WARNING_CATEGORY,
+              location,
+              "@IntegrationTest methods can only be called from @IntegrationTest methods"
+            )
+          )
+        }
         context.addDependency(method)
         if (staticContext.contains(true) && !method.thisTypeIdOpt.contains(context.typeId))
           Referenceable.addReferencingLocation(callee, method, location, context.thisType)
@@ -616,7 +635,7 @@ final case class MethodCallWithId(target: Id, arguments: ArraySeq[Expression]) e
           td match {
             case Left(error) =>
               if (!context.module.isGhostedType(method.typeName))
-                context.log(error.asIssue(location))
+                context.logTypeError(location, error)
               context.saveResult(this, target.location.location) {
                 ExprContext(None, None, method)
               }
@@ -717,16 +736,13 @@ final case class MethodCallCtor(isSuper: Boolean, arguments: ArraySeq[Expression
 
 object MethodCall {
   def construct(from: MethodCallContext): MethodCall = {
-    CodeParser
-      .toScala(from.id())
+    Option(from.id())
       .map(id => {
         MethodCallWithId(Id.construct(id), expressions(from.expressionList())).withContext(from)
       })
       .getOrElse({
-        MethodCallCtor(
-          CodeParser.toScala(from.SUPER()).nonEmpty,
-          expressions(from.expressionList())
-        ).withContext(from)
+        MethodCallCtor(Option(from.SUPER()).nonEmpty, expressions(from.expressionList()))
+          .withContext(from)
       })
   }
 
@@ -736,8 +752,7 @@ object MethodCall {
   }
 
   private def expressions(from: ExpressionListContext): ArraySeq[Expression] = {
-    CodeParser
-      .toScala(from)
+    Option(from)
       .map(el => CodeParser.toScala(el.expression()).map(e => Expression.construct(e)))
       .getOrElse(Expression.emptyExpressions)
   }
@@ -960,21 +975,19 @@ object Expression {
     val cst: Expression = {
       from match {
         case expr: DotExpressionContext =>
-          CodeParser
-            .toScala(expr.anyId())
+          Option(expr.anyId())
             .map(id => {
               DotExpressionWithId(
                 Expression.construct(expr.expression()),
-                CodeParser.toScala(expr.DOT()).isEmpty,
+                Option(expr.DOT()).isEmpty,
                 Id.constructAny(id)
               )
             })
             .getOrElse({
               DotExpressionWithMethod(
                 Expression.construct(expr.expression()),
-                CodeParser.toScala(expr.DOT()).isEmpty,
-                CodeParser
-                  .toScala(expr.dotMethodCall())
+                Option(expr.DOT()).isEmpty,
+                Option(expr.dotMethodCall())
                   .map(method => {
                     MethodCall.construct(method)
                   })
@@ -1007,53 +1020,54 @@ object Expression {
           SubExpression(Expression.construct(expr.expression()))
 
         case expr: PostOpExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.INC())
-            .orElse(CodeParser.toScala(expr.DEC()))
-          PostfixExpression(Expression.construct(expr.expression()), CodeParser.getText(op.get))
+          val op = Option(expr.INC())
+            .orElse(Option(expr.DEC()))
+          PostfixExpression(
+            Expression.construct(expr.expression()),
+            Option(op.get).map(_.getText).getOrElse("")
+          )
 
         case expr: PreOpExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.ADD())
-            .orElse(CodeParser.toScala(expr.DEC()))
-            .orElse(CodeParser.toScala(expr.INC()))
-            .orElse(CodeParser.toScala(expr.SUB()))
-          PrefixExpression(Expression.construct(expr.expression()), CodeParser.getText(op.get))
+          val op = Option(expr.ADD())
+            .orElse(Option(expr.DEC()))
+            .orElse(Option(expr.INC()))
+            .orElse(Option(expr.SUB()))
+          PrefixExpression(
+            Expression.construct(expr.expression()),
+            Option(op.get).map(_.getText).getOrElse("")
+          )
 
         case expr: NegExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.BANG())
-            .orElse(CodeParser.toScala(expr.TILDE()))
+          val op = Option(expr.BANG())
+            .orElse(Option(expr.TILDE()))
           NegationExpression(
             Expression.construct(expr.expression()),
-            CodeParser.getText(op.get) == "~"
+            Option(op.get).map(_.getText).getOrElse("") == "~"
           )
 
         case expr: Arth1ExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.DIV())
-            .orElse(CodeParser.toScala(expr.MUL()))
+          val op = Option(expr.DIV())
+            .orElse(Option(expr.MUL()))
           val expressions = CodeParser.toScala(expr.expression())
           if (expressions.length == 2) {
             BinaryExpression(
               Expression.construct(expressions.head),
               Expression.construct(expressions(1)),
-              CodeParser.getText(op.get)
+              Option(op.get).map(_.getText).getOrElse("")
             )
           } else {
             EmptyExpr()
           }
 
         case expr: Arth2ExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.ADD())
-            .orElse(CodeParser.toScala(expr.SUB()))
+          val op = Option(expr.ADD())
+            .orElse(Option(expr.SUB()))
           val expressions = CodeParser.toScala(expr.expression())
           if (expressions.length == 2) {
             BinaryExpression(
               Expression.construct(expressions.head),
               Expression.construct(expressions(1)),
-              CodeParser.getText(op.get)
+              Option(op.get).map(_.getText).getOrElse("")
             )
           } else {
             EmptyExpr()
@@ -1075,10 +1089,10 @@ object Expression {
           }
 
         case expr: CmpExpressionContext =>
-          val assign = CodeParser.toScala(expr.ASSIGN()).nonEmpty
-          val op = CodeParser.getText(
-            CodeParser.toScala(expr.GT()).orElse(CodeParser.toScala(expr.LT())).get
-          )
+          val assign = Option(expr.ASSIGN()).nonEmpty
+          val op = Option(Option(expr.GT()).orElse(Option(expr.LT())).get)
+            .map(_.getText)
+            .getOrElse("")
           val opText = (assign, op) match {
             case (true, ">") => ">="
             case (true, "<") => "<="
@@ -1103,18 +1117,17 @@ object Expression {
           )
 
         case expr: EqualityExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.EQUAL())
-            .orElse(CodeParser.toScala(expr.LESSANDGREATER()))
-            .orElse(CodeParser.toScala(expr.NOTEQUAL()))
-            .orElse(CodeParser.toScala(expr.TRIPLEEQUAL()))
-            .orElse(CodeParser.toScala(expr.TRIPLENOTEQUAL()))
+          val op = Option(expr.EQUAL())
+            .orElse(Option(expr.LESSANDGREATER()))
+            .orElse(Option(expr.NOTEQUAL()))
+            .orElse(Option(expr.TRIPLEEQUAL()))
+            .orElse(Option(expr.TRIPLENOTEQUAL()))
           val expressions = CodeParser.toScala(expr.expression())
           if (expressions.length == 2) {
             BinaryExpression(
               Expression.construct(expressions.head),
               Expression.construct(expressions(1)),
-              CodeParser.getText(op.get)
+              Option(op.get).map(_.getText).getOrElse("")
             )
           } else {
             EmptyExpr()
@@ -1205,23 +1218,22 @@ object Expression {
           }
 
         case expr: AssignExpressionContext =>
-          val op = CodeParser
-            .toScala(expr.ADD_ASSIGN())
-            .orElse(CodeParser.toScala(expr.AND_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.ASSIGN()))
-            .orElse(CodeParser.toScala(expr.DIV_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.LSHIFT_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.MUL_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.OR_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.RSHIFT_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.SUB_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.URSHIFT_ASSIGN()))
-            .orElse(CodeParser.toScala(expr.XOR_ASSIGN()))
+          val op = Option(expr.ADD_ASSIGN())
+            .orElse(Option(expr.AND_ASSIGN()))
+            .orElse(Option(expr.ASSIGN()))
+            .orElse(Option(expr.DIV_ASSIGN()))
+            .orElse(Option(expr.LSHIFT_ASSIGN()))
+            .orElse(Option(expr.MUL_ASSIGN()))
+            .orElse(Option(expr.OR_ASSIGN()))
+            .orElse(Option(expr.RSHIFT_ASSIGN()))
+            .orElse(Option(expr.SUB_ASSIGN()))
+            .orElse(Option(expr.URSHIFT_ASSIGN()))
+            .orElse(Option(expr.XOR_ASSIGN()))
           val expressions = CodeParser.toScala(expr.expression())
           BinaryExpression(
             Expression.construct(expressions.head),
             Expression.construct(expressions(1)),
-            CodeParser.getText(op.get)
+            Option(op.get).map(_.getText).getOrElse("")
           )
         case expr: PrimaryExpressionContext =>
           PrimaryExpression(Primary.construct(expr.primary()))
@@ -1239,7 +1251,7 @@ object Expression {
 
 object Arguments {
   def construct(from: ArgumentsContext): ArraySeq[Expression] = {
-    val el = CodeParser.toScala(from.expressionList())
+    val el = Option(from.expressionList())
     if (el.nonEmpty) {
       Expression.construct(CodeParser.toScala(el.get.expression()))
     } else {

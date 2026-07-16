@@ -23,6 +23,7 @@ import com.nawforce.apexlink.finding.TypeResolver.TypeResponse
 import com.nawforce.apexlink.names.TypeNames.TypeNameUtils
 import com.nawforce.apexlink.names.{TypeNames, XNames}
 import com.nawforce.apexlink.org.{OPM, OrgInfo}
+import com.nawforce.pkgforce.diagnostics.LoggerOps
 import com.nawforce.apexlink.types.apex.{ApexClassDeclaration, PreReValidatable}
 import com.nawforce.apexlink.types.other.Component
 import com.nawforce.apexlink.types.platform.PlatformTypes
@@ -57,6 +58,8 @@ trait FieldDeclaration extends DependencyHolder with UnsafeLocatable with Depend
 
   def visibility: Option[Modifier] =
     modifiers.find(m => ApexModifiers.visibilityModifiers.contains(m))
+
+  lazy val isTestVisible: Boolean = modifiers.contains(TEST_VISIBLE_ANNOTATION)
 
   def isExternallyVisible: Boolean =
     modifiers.exists(FieldDeclaration.externalFieldModifiers.contains)
@@ -227,7 +230,7 @@ trait ConstructorDeclaration extends DependencyHolder with Dependent with Parame
 
   def visibility: Modifier =
     modifiers.find(m => ApexModifiers.visibilityModifiers.contains(m)).getOrElse(PRIVATE_MODIFIER)
-  def isTestVisible: Boolean = modifiers.contains(TEST_VISIBLE_ANNOTATION)
+  lazy val isTestVisible: Boolean = modifiers.contains(TEST_VISIBLE_ANNOTATION)
 
   /** Test if the passed constructor has params compatible with this method. Ideally this would just
     * be a comparison of type names but there is a quirk in how platform generic interfaces are
@@ -263,11 +266,11 @@ trait MethodDeclaration extends DependencyHolder with Dependent with Parameters 
   def nameAndParameterTypes: String = s"$name($parameterTypes)"
   def parameterTypes: String        = parameters.map(_.typeName).mkString(", ")
 
-  def isStatic: Boolean      = modifiers.contains(STATIC_MODIFIER)
-  def isAbstract: Boolean    = modifiers.contains(ABSTRACT_MODIFIER)
-  def isVirtual: Boolean     = modifiers.contains(VIRTUAL_MODIFIER)
-  def isOverride: Boolean    = modifiers.contains(OVERRIDE_MODIFIER)
-  def isTestVisible: Boolean = modifiers.contains(TEST_VISIBLE_ANNOTATION)
+  def isStatic: Boolean           = modifiers.contains(STATIC_MODIFIER)
+  def isAbstract: Boolean         = modifiers.contains(ABSTRACT_MODIFIER)
+  def isVirtual: Boolean          = modifiers.contains(VIRTUAL_MODIFIER)
+  def isOverride: Boolean         = modifiers.contains(OVERRIDE_MODIFIER)
+  lazy val isTestVisible: Boolean = modifiers.contains(TEST_VISIBLE_ANNOTATION)
 
   def visibility: Option[Modifier] =
     modifiers.find(m => ApexModifiers.visibilityModifiers.contains(m))
@@ -343,14 +346,19 @@ object MethodDeclaration {
     )
 }
 
-/** Method wrapper that enforces an Any return type on the provided method */
-class AnyReturnMethodDeclaration(method: MethodDeclaration) extends MethodDeclaration {
+/** Method wrapper that enforces an Any return type on the provided method. The wrapper is
+  * transparent to the wrapped method's identity: it forwards thisTypeIdOpt and exposes the
+  * underlying method (via 'method') so that visibility and reference resolution operate on the
+  * real declaration rather than the wrapper (which is not an ApexMethodLike).
+  */
+class AnyReturnMethodDeclaration(val method: MethodDeclaration) extends MethodDeclaration {
   override val name: Name                                 = method.name
   override val modifiers: ArraySeq[Modifier]              = method.modifiers
   override val parameters: ArraySeq[ParameterDeclaration] = method.parameters
 
   override def typeName: TypeName = TypeName.Any
   override def hasBlock: Boolean  = method.hasBlock
+  override def thisTypeIdOpt      = method.thisTypeIdOpt
 }
 
 trait AbstractTypeDeclaration {
@@ -423,6 +431,9 @@ trait TypeDeclaration extends AbstractTypeDeclaration with Dependent with PreReV
   def visibility: Option[Modifier] = ApexModifiers.visibilityModifiers.find(modifiers.contains)
   def isAbstract: Boolean          = modifiers.contains(ABSTRACT_MODIFIER)
   def isVirtual: Boolean           = modifiers.contains(VIRTUAL_MODIFIER)
+  lazy val isUnitTest: Boolean     = modifiers.contains(ISTEST_ANNOTATION)
+  lazy val isUnitTestContext: Boolean =
+    isUnitTest || (inTest && outerTypeDeclaration.exists(_.isUnitTestContext))
   def isExtensible: Boolean =
     nature == INTERFACE_NATURE || (nature == CLASS_NATURE && (isAbstract || isVirtual))
 
@@ -446,6 +457,22 @@ trait TypeDeclaration extends AbstractTypeDeclaration with Dependent with PreReV
     }
   }
 
+  /** Validate this type, returning true on success. Unlike safeValidate(), failures are not logged
+    * as diagnostics, allowing callers to handle them (e.g. retry with a different parser).
+    */
+  def tryValidate(): Boolean = {
+    try {
+      validate()
+      true
+    } catch {
+      case ex: Throwable =>
+        LoggerOps.debug(
+          s"Validation failed for ${paths.headOption.getOrElse("unknown")}: ${ex.getMessage}"
+        )
+        false
+    }
+  }
+
   protected def validate(): Unit
 
   override def findNestedType(name: Name): Option[TypeDeclaration] = {
@@ -460,22 +487,62 @@ trait TypeDeclaration extends AbstractTypeDeclaration with Dependent with PreReV
     }
   }
 
+  def findOuterStaticField(name: Name, staticContext: Option[Boolean]): Option[FieldDeclaration] = {
+    val matches = findOuterStaticField(name)
+    staticContext match {
+      case Some(x) => matches.find(f => f.isStatic == x)
+      case None    => matches
+    }
+  }
+
   /* Find a field just from its name. We need to be careful here about recursion between types, e.g. an outer class
    * having a super class which is an inner of the outer class. To handle this we just exclude declarations from
    * being searched a second time. */
   protected def findField(
     name: Name,
-    exclude: mutable.HashSet[TypeDeclaration] = new mutable.HashSet()
+    exclude: mutable.HashSet[TypeDeclaration] = new mutable.HashSet(),
+    searchOuter: Boolean = true
   ): Option[FieldDeclaration] = {
     exclude.add(this)
     fields
       .find(_.name == name)
-      .orElse(superClassDeclaration.filterNot(exclude.contains).flatMap(_.findField(name, exclude)))
       .orElse(
-        outerTypeDeclaration
+        // Members inherited via the superclass chain, but not the superclass's own enclosing
+        // scope - that is searched later (below) so a lexically enclosing name takes precedence
+        // over a name reachable through the base class's enclosing type (#482).
+        superClassDeclaration
+          .filterNot(exclude.contains)
+          .flatMap(_.findField(name, exclude, searchOuter = false))
+      )
+      .orElse(
+        // A static from this type's own lexically enclosing scope.
+        Option
+          .when(searchOuter)(outerTypeDeclaration)
+          .flatten
           .filterNot(exclude.contains)
           .flatMap(_.findField(name, exclude).filter(_.isStatic))
       )
+      .orElse(
+        // Fallback: a static reachable through the superclass's enclosing scope. This is valid
+        // Apex (a nested class may resolve an unqualified static through the enclosing type of
+        // an externally nested base) but is lower precedence than the enclosing scope above.
+        Option
+          .when(searchOuter)(superClassDeclaration)
+          .flatten
+          .flatMap(_.outerTypeDeclaration)
+          .filterNot(exclude.contains)
+          .flatMap(_.findField(name, exclude).filter(_.isStatic))
+      )
+  }
+
+  private def findOuterStaticField(
+    name: Name,
+    exclude: mutable.HashSet[TypeDeclaration] = new mutable.HashSet()
+  ): Option[FieldDeclaration] = {
+    exclude.add(this)
+    outerTypeDeclaration
+      .filterNot(exclude.contains)
+      .flatMap(_.findField(name, exclude).filter(_.isStatic))
   }
 
   private lazy val methodMap: MethodMap =

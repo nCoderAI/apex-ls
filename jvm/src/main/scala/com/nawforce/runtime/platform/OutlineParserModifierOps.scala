@@ -3,7 +3,7 @@
  */
 package com.nawforce.runtime.platform
 
-import com.financialforce.types.base.{
+import io.github.apexdevtools.types.base.{
   Annotation => OPAnnotation,
   IdWithLocation => OPId,
   Location => OPLocation,
@@ -11,39 +11,33 @@ import com.financialforce.types.base.{
 }
 import com.nawforce.pkgforce.modifiers.{LogEntryContext, ModifierLogger, _}
 import com.nawforce.pkgforce.path.PathLike
-import com.nawforce.runtime.platform.OutlineParserLocationOps.extendLocation
 
 import scala.collection.compat.immutable.ArraySeq
-
 object OutlineParserModifierOps {
 
   private def toModifiers(
     path: PathLike,
-    location: OPLocation,
+    declarationLocation: OPLocation,
     annotations: Array[OPAnnotation],
     src: Array[OPModifier]
   ): ArraySeq[(Modifier, LogEntryContext, String)] = {
 
+    def normaliseModifierLocation(modifier: OPModifier): OPLocation = {
+      modifier.location.getOrElse(declarationLocation)
+    }
+
+    def normaliseAnnotationLocation(annotation: OPAnnotation): OPLocation = {
+      annotation.location.getOrElse(declarationLocation)
+    }
+
     val modifiers = {
       annotations.flatMap(opA =>
         ModifierOps("@" + opA.name.replace(" ", "").toLowerCase, opA.parameters.getOrElse(""))
-          .map(m =>
-            (
-              m,
-              OPLogEntryContext(path, extendLocation(location, startLineOffset = -2)),
-              "Annotation"
-            )
-          )
+          .map(m => (m, OPLogEntryContext(path, normaliseAnnotationLocation(opA)), "Annotation"))
       ) ++
         src.flatMap(opM =>
           ModifierOps(opM.text.replace(" ", "").toLowerCase, "")
-            .map(m =>
-              (
-                m,
-                OPLogEntryContext(path, extendLocation(location, startLineOffset = -1)),
-                "Annotation"
-              )
-            )
+            .map(m => (m, OPLogEntryContext(path, normaliseModifierLocation(opM)), "Modifier"))
         )
     }
 
@@ -65,39 +59,42 @@ object OutlineParserModifierOps {
   def classModifiers(
     path: PathLike,
     id: OPId,
+    declarationLocation: OPLocation,
     annotations: Array[OPAnnotation],
     src: Array[OPModifier],
     outer: Boolean
   ): ModifierResults = {
 
     val logger = new ModifierLogger()
-    val mods   = toModifiers(path, id.location, annotations, src)
+    val mods   = toModifiers(path, declarationLocation, annotations, src)
     ApexModifiers.classModifiers(logger, mods, outer, OPLogEntryContext(path, id.location))
   }
 
   def interfaceModifiers(
     path: PathLike,
     id: OPId,
+    declarationLocation: OPLocation,
     annotations: Array[OPAnnotation],
     src: Array[OPModifier],
     outer: Boolean
   ): ModifierResults = {
 
     val logger = new ModifierLogger()
-    val mods   = toModifiers(path, id.location, annotations, src)
+    val mods   = toModifiers(path, declarationLocation, annotations, src)
     ApexModifiers.interfaceModifiers(logger, mods, outer, OPLogEntryContext(path, id.location))
   }
 
   def enumModifiers(
     path: PathLike,
     id: OPId,
+    declarationLocation: OPLocation,
     annotations: Array[OPAnnotation],
     src: Array[OPModifier],
     outer: Boolean
   ): ModifierResults = {
 
     val logger = new ModifierLogger()
-    val mods   = toModifiers(path, id.location, annotations, src)
+    val mods   = toModifiers(path, declarationLocation, annotations, src)
     ApexModifiers.enumModifiers(logger, mods, outer, OPLogEntryContext(path, id.location))
   }
 
@@ -149,11 +146,17 @@ object OutlineParserModifierOps {
     path: PathLike,
     id: OPId,
     annotations: Array[OPAnnotation],
-    src: Array[OPModifier]
+    src: Array[OPModifier],
+    ownerInfo: InterfaceOwnerInfo
   ): ModifierResults = {
     val logger = new ModifierLogger()
     val mods   = toModifiers(path, id.location, annotations, src)
-    MethodModifiers.interfaceMethodModifiers(logger, mods, OPLogEntryContext(path, id.location))
+    MethodModifiers.interfaceMethodModifiers(
+      logger,
+      mods,
+      OPLogEntryContext(path, id.location),
+      ownerInfo
+    )
   }
 
   def initializerBlockModifiers(isStatic: Boolean): ModifierResults =

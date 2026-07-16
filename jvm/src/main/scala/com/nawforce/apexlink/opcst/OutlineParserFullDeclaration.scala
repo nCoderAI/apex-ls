@@ -3,14 +3,14 @@
  */
 package com.nawforce.apexlink.opcst
 
-import com.financialforce.oparser.OutlineParser
+import io.github.apexdevtools.oparser.OutlineParser
 import com.nawforce.apexlink.cst.{ClassDeclaration, EnumDeclaration, InterfaceDeclaration}
 import com.nawforce.apexlink.names.TypeNames.TypeNameUtils
 import com.nawforce.apexlink.org.OPM
 import com.nawforce.apexlink.types.apex.{FullDeclaration, ThisType}
 import com.nawforce.pkgforce.diagnostics.LoggerOps
 import com.nawforce.pkgforce.documents.ClassDocument
-import com.nawforce.pkgforce.modifiers.ISTEST_ANNOTATION
+import com.nawforce.pkgforce.modifiers.ApexModifiers
 import com.nawforce.pkgforce.names.TypeName
 import com.nawforce.runtime.parsers.{Source, SourceData}
 import com.nawforce.runtime.platform.OutlineParserModifierOps.{
@@ -67,10 +67,21 @@ object OutlineParserFullDeclaration {
     val thisTypeNameWithNS = TypeName(cls.name).withNamespace(module.namespace)
 
     val modifierResults =
-      classModifiers(cls.path, ctd.id, ctd.annotations, ctd.modifiers, outerTypeName.isEmpty)
+      classModifiers(
+        cls.path,
+        ctd.id,
+        ctd.location,
+        ctd.annotations,
+        ctd.modifiers,
+        outerTypeName.isEmpty
+      )
 
     val thisType =
-      ThisType(module, thisTypeNameWithNS, modifierResults.modifiers.contains(ISTEST_ANNOTATION))
+      ThisType(
+        module,
+        thisTypeNameWithNS,
+        ApexModifiers.hasTestClassModifier(modifierResults.modifiers)
+      )
 
     val rv = OutlineParserClassDeclaration.construct(
       cls.path,
@@ -94,10 +105,21 @@ object OutlineParserFullDeclaration {
     val thisTypeNameWithNS = TypeName(cls.name).withNamespace(module.namespace)
 
     val modifierResults =
-      interfaceModifiers(cls.path, itd.id, itd.annotations, itd.modifiers, outerTypeName.isEmpty)
+      interfaceModifiers(
+        cls.path,
+        itd.id,
+        itd.location,
+        itd.annotations,
+        itd.modifiers,
+        outerTypeName.isEmpty
+      )
 
     val thisType =
-      ThisType(module, thisTypeNameWithNS, modifierResults.modifiers.contains(ISTEST_ANNOTATION))
+      ThisType(
+        module,
+        thisTypeNameWithNS,
+        ApexModifiers.hasTestClassModifier(modifierResults.modifiers)
+      )
 
     val rv = OutlineParserInterfaceDeclaration.construct(
       cls.path,
@@ -121,10 +143,21 @@ object OutlineParserFullDeclaration {
     val thisTypeNameWithNS = TypeName(cls.name).withNamespace(module.namespace)
 
     val modifierResults =
-      enumModifiers(cls.path, etd.id, etd.annotations, etd.modifiers, outerTypeName.isEmpty)
+      enumModifiers(
+        cls.path,
+        etd.id,
+        etd.location,
+        etd.annotations,
+        etd.modifiers,
+        outerTypeName.isEmpty
+      )
 
     val thisType =
-      ThisType(module, thisTypeNameWithNS, modifierResults.modifiers.contains(ISTEST_ANNOTATION))
+      ThisType(
+        module,
+        thisTypeNameWithNS,
+        ApexModifiers.hasTestClassModifier(modifierResults.modifiers)
+      )
 
     val rv =
       OutlineParserEnumDeclaration.construct(etd, source, thisType, outerTypeName, modifierResults)

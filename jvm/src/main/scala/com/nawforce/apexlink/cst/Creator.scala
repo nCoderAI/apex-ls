@@ -72,8 +72,7 @@ object IdCreatedNamePair {
   def construct(from: IdCreatedNamePairContext): IdCreatedNamePair = {
     IdCreatedNamePair(
       Id.constructAny(from.anyId()),
-      CodeParser
-        .toScala(from.typeList())
+      Option(from.typeList())
         .map(tl => TypeList.construct(tl))
         .getOrElse(TypeNames.emptyTypeNames)
     ).withContext(from)
@@ -93,13 +92,12 @@ final case class Creator(createdName: CreatedName, creatorRest: Option[CreatorRe
 object Creator {
   def construct(from: CreatorContext): Creator = {
     val rest: Option[CreatorRest] =
-      CodeParser
-        .toScala(from.noRest())
+      Option(from.noRest())
         .map(ClassCreatorRest.construct)
-        .orElse(CodeParser.toScala(from.classCreatorRest()).map(ClassCreatorRest.construct))
-        .orElse(CodeParser.toScala(from.arrayCreatorRest()).map(ArrayCreatorRest.construct))
-        .orElse(CodeParser.toScala(from.mapCreatorRest()).map(MapCreatorRest.construct))
-        .orElse(CodeParser.toScala(from.setCreatorRest()).map(SetOrListCreatorRest.construct))
+        .orElse(Option(from.classCreatorRest()).map(ClassCreatorRest.construct))
+        .orElse(Option(from.arrayCreatorRest()).map(ArrayCreatorRest.construct))
+        .orElse(Option(from.mapCreatorRest()).map(MapCreatorRest.construct))
+        .orElse(Option(from.setCreatorRest()).map(SetOrListCreatorRest.construct))
 
     Creator(CreatedName.construct(from.createdName()), rest).withContext(from)
   }
@@ -283,8 +281,8 @@ final case class ArrayCreatorRest(
 object ArrayCreatorRest {
   def construct(from: ArrayCreatorRestContext): ArrayCreatorRest = {
     ArrayCreatorRest(
-      CodeParser.toScala(from.expression()).map(Expression.construct),
-      CodeParser.toScala(from.arrayInitializer()).map(ArrayInitializer.construct)
+      Option(from.expression()).map(Expression.construct),
+      Option(from.arrayInitializer()).map(ArrayInitializer.construct)
     )
   }
 }
@@ -326,14 +324,14 @@ final case class MapCreatorRest(pairs: List[MapCreatorRestPair]) extends Creator
     val keyType = context.getTypeAndAddDependency(enclosedTypes.get._1, context.thisType)
     if (keyType.isLeft) {
       if (!context.module.isGhostedType(enclosedTypes.get._1))
-        context.log(keyType.swap.getOrElse(throw new NoSuchElementException).asIssue(location))
+        context.logTypeError(location, keyType.swap.getOrElse(throw new NoSuchElementException))
       return ExprContext.empty
     }
 
     val valueType = context.getTypeAndAddDependency(enclosedTypes.get._2, context.thisType)
     if (valueType.isLeft) {
       if (!context.module.isGhostedType(enclosedTypes.get._2))
-        context.log(valueType.swap.getOrElse(throw new NoSuchElementException).asIssue(location))
+        context.logTypeError(location, valueType.swap.getOrElse(throw new NoSuchElementException))
       return ExprContext.empty
     }
 
@@ -432,7 +430,7 @@ final case class SetOrListCreatorRest(parts: ArraySeq[Expression]) extends Creat
     context.getTypeAndAddDependency(enclosedType.get, context.thisType) match {
       case Left(error) =>
         if (!context.module.isGhostedType(enclosedType.get))
-          context.log(error.asIssue(location))
+          context.logTypeError(location, error)
         // Still verify parts for variable usage tracking, even though we can't type check
         parts.foreach(_.verify(input, context))
         ExprContext.empty

@@ -21,6 +21,7 @@ import com.nawforce.apexlink.types.apex.{
   ApexFieldLike,
   ApexMethodLike,
   FullDeclaration,
+  SummaryDeclaration,
   TriggerDeclaration
 }
 import com.nawforce.apexlink.types.core.{
@@ -66,7 +67,13 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
       .distinct
   }
 
-  private def reportUnused(td: FullDeclaration): Seq[DependentType] = {
+  // Recompute holder-based unused for classes loaded from the parsed cache (issue #477). The cached
+  // result is workspace-dependent (unused is a whole-program property) so replaying it across
+  // workspaces is unsound. SummaryDeclarations are seeded directly into the plugin manager by
+  // StreamDeployer, and the ripple in reportUnused re-validates the types they depend on.
+  override def onSummaryValidated(td: SummaryDeclaration): Seq[DependentType] = reportUnused(td)
+
+  private def reportUnused(td: ApexClassDeclaration): Seq[DependentType] = {
     // Ignore if suppressed, or inner type (handled by unusedIssues)
     if (td.modifiers.exists(suppressModifiers.contains) || td.outerTypeName.isDefined) {
       Seq.empty
@@ -89,14 +96,23 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
         )
       }
 
-      // Return all our dependents so they are re-validated for unused as well
-      val dependents = mutable.Set[Dependent]()
-      td.collectDependencies(dependents)
-      dependents
+      // Return the types we depend on so they are re-validated for unused as well. This is what
+      // makes the analysis order-independent: when a type is added that uses an earlier type, the
+      // earlier type is re-checked with the new holder present. Both parsed and cache-loaded types
+      // must contribute member-level dependencies (method/field/block use), not just type-level,
+      // otherwise a type used only from another type's method body is never re-validated.
+      val collected = mutable.Set[Dependent]()
+      td match {
+        case fd: FullDeclaration    => fd.collectDependencies(collected)
+        case sd: SummaryDeclaration => sd.collectDependencies(collected)
+        case _                      => collected ++= td.dependencies()
+      }
+      collected
         .collect { case td: TypeDeclaration => td }
         .map(_.outermostTypeDeclaration)
         .collect { case dt: DependentType => dt }
         .toSeq
+        .distinct
     }
   }
 
@@ -123,7 +139,7 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
       })
   }
 
-  private implicit class DeclarationOps(td: FullDeclaration) {
+  private implicit class DeclarationOps(td: ApexClassDeclaration) {
 
     /** Generates unused issues for a type, see doc/Unused.md for details.
       *
@@ -222,13 +238,9 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
     private def couldBeUnused(method: ApexMethodLike): Boolean = {
       // If we don't have complete interface information, public/global methods might be
       // implementing external interfaces that we don't have full type information for
-      td match {
-        case apexClass: ApexClassDeclaration =>
-          apexClass.hasAllInterfaces || !method.visibility.exists(m =>
-            m == PUBLIC_MODIFIER || m == GLOBAL_MODIFIER
-          )
-        case _ => true // Non-Apex types can always be checked for unused methods
-      }
+      td.hasAllInterfaces || !method.visibility.exists(m =>
+        m == PUBLIC_MODIFIER || m == GLOBAL_MODIFIER
+      )
     }
 
     def unusedMethods: ArraySeq[Issue] = {
@@ -239,13 +251,16 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
           case _ => None
         }
         .map(method => {
-          val suffix = if (method.hasHolders) s", $onlyTestCodeReferenceText" else ""
+          val hierarchyContext    = method.unusedHierarchyContext(td.module, td.inTest)
+          val entryPointCandidate = method.isPublicStaticEntryPointCandidate(td.inTest)
+          val methodModifierText  = method.unusedMethodModifierText(entryPointCandidate)
+          val suffix              = method.unusedMethodSuffix(entryPointCandidate)
           new Issue(
             method.location.path,
             Diagnostic(
               UNUSED_CATEGORY,
               method.idLocation,
-              s"Unused ${method.visibility.getOrElse(PRIVATE_MODIFIER).name} method '${method.signature}'$suffix"
+              s"Unused $methodModifierText method '${method.signature}'$hierarchyContext$suffix"
             )
           )
         })
@@ -298,6 +313,64 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
       })
     }
 
+    def unusedMethodModifierText(includeStatic: Boolean): String = {
+      val visibility = method.visibility.getOrElse(PRIVATE_MODIFIER).name
+      if (includeStatic) s"$visibility static" else visibility
+    }
+
+    def isPublicStaticEntryPointCandidate(inTest: Boolean): Boolean = {
+      !inTest && method.isStatic && method.visibility.contains(PUBLIC_MODIFIER)
+    }
+
+    def unusedMethodSuffix(entryPointCandidate: Boolean): String = {
+      (method.hasHolders, entryPointCandidate) match {
+        case (true, true)  => s"; only referenced by test code, $publicStaticEntryPointActionText"
+        case (true, false) => s", $onlyTestCodeReferenceText"
+        case (false, true) => s"; $publicStaticEntryPointActionText"
+        case _             => ""
+      }
+    }
+
+    def unusedHierarchyContext(module: OPM.Module, inTest: Boolean): String = {
+      if (method.isOverride && overridesUnusedVirtualMethod(module, inTest))
+        " (overrides unused virtual method)"
+      else if (method.isVirtual && allOverridesUnused(module, inTest))
+        " (all overrides also unused)"
+      else
+        ""
+    }
+
+    private def overridesUnusedVirtualMethod(module: OPM.Module, inTest: Boolean): Boolean = {
+      method.shadows.exists({
+        case am: ApexMethodLike if am.isVirtual => !am.isUsed(module, inTest)
+        case _                                  => false
+      })
+    }
+
+    private def allOverridesUnused(module: OPM.Module, inTest: Boolean): Boolean = {
+      val overrides = collectOverrides(method)
+      overrides.nonEmpty && overrides.forall(overrideMethod =>
+        !overrideMethod.isUsed(module, inTest)
+      )
+    }
+
+    private def collectOverrides(method: ApexMethodLike): Set[ApexMethodLike] = {
+      val visited = mutable.Set[ApexMethodLike]()
+      val queue   = mutable.Queue[ApexMethodLike]()
+      queue.enqueueAll(method.shadowedBy.collect { case am: ApexMethodLike if am.isOverride => am })
+
+      while (queue.nonEmpty) {
+        val current = queue.dequeue()
+        if (!visited.contains(current)) {
+          visited.add(current)
+          queue.enqueueAll(current.shadowedBy.collect {
+            case am: ApexMethodLike if am.isOverride => am
+          })
+        }
+      }
+      visited.toSet
+    }
+
     private def hasGhostedParameters(module: OPM.Module): Boolean = {
       method.parameters.exists(parameter => module.isGhostedType(parameter.typeName))
     }
@@ -322,6 +395,8 @@ class UnusedPlugin(td: DependentType, isLibrary: Boolean) extends Plugin(td, isL
 object UnusedPlugin {
   val onlyTestCodeReferenceText =
     "only referenced by test code, remove or make private @TestVisible"
+  val publicStaticEntryPointActionText =
+    "remove, make private @TestVisible, or add @SuppressWarnings('Unused') with a comment if this is an external entry point"
 
   val suppressModifiers: Set[Modifier] =
     Set(SUPPRESS_WARNINGS_ANNOTATION_PMD, SUPPRESS_WARNINGS_ANNOTATION_UNUSED)
@@ -337,7 +412,9 @@ object UnusedPlugin {
   private val excludedTestMethodModifiers: Set[Modifier] =
     Set(
       ISTEST_ANNOTATION,
+      INTEGRATION_TEST_ANNOTATION,
       TEST_SETUP_ANNOTATION,
+      TEAR_DOWN_ANNOTATION,
       TEST_METHOD_MODIFIER,
       SUPPRESS_WARNINGS_ANNOTATION_PMD,
       SUPPRESS_WARNINGS_ANNOTATION_UNUSED

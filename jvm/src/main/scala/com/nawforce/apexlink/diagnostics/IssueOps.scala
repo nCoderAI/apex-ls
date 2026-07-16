@@ -55,6 +55,26 @@ object IssueOps {
       Diagnostic(MISSING_CATEGORY, location.location, s"No type declaration found for '$typeName'")
     )
 
+  def noTypeDeclaration(
+    location: PathLocation,
+    typeName: TypeName,
+    isApexType: TypeName => Boolean
+  ): Issue = {
+    typeName.outer
+      .filter(isApexType)
+      .map(outerTypeName =>
+        Issue(
+          location.path,
+          Diagnostic(
+            MISSING_CATEGORY,
+            location.location,
+            s"No nested type '${typeName.name}' found on Apex type '$outerTypeName' while resolving '$typeName'; declare the nested type explicitly or use the actual type name"
+          )
+        )
+      )
+      .getOrElse(noTypeDeclaration(location, typeName))
+  }
+
   def noVariableOrType(location: PathLocation, name: Name, typeName: TypeName): Issue =
     Issue(
       location.path,
@@ -94,7 +114,7 @@ object IssueOps {
       Diagnostic(
         ERROR_CATEGORY,
         location.location,
-        s"Unexpected annotation '${CodeParser.getText(context)}' on class declaration"
+        s"Unexpected annotation '${Option(context).map(_.getText).getOrElse("")}' on class declaration"
       )
     )
 

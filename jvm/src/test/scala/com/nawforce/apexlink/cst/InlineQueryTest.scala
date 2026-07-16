@@ -37,6 +37,36 @@ class InlineQueryTest extends AnyFunSuite with TestHelper {
     }
   }
 
+  test("SOQL security enforced warning") {
+    typeDeclaration(
+      "public class Dummy {{ Object a = [Select Id from Account WITH SECURITY_ENFORCED]; }}"
+    )
+    assert(dummyIssues.contains("WITH SECURITY_ENFORCED is deprecated, use WITH USER_MODE instead"))
+  }
+
+  test("SOQL security enforced warning reports absolute line in property body") {
+    // A property getter body is re-parsed as a separate fragment with a line offset; the
+    // deprecation warning location must map back to the absolute file line, not the
+    // fragment-relative line (see Source.getLocation / lineOffset handling).
+    typeDeclaration("""public class Dummy {
+        |  public List<Account> accounts {
+        |    get {
+        |      return [Select Id from Account WITH SECURITY_ENFORCED];
+        |    }
+        |  }
+        |}""".stripMargin)
+    assert(
+      dummyIssues ==
+        "Warning: line 4 at 37-59: WITH SECURITY_ENFORCED is deprecated, use WITH USER_MODE instead\n"
+    )
+  }
+
+  test("SOQL user mode no warning") {
+    happyTypeDeclaration(
+      "public class Dummy {{ Object a = [Select Id from Account WITH USER_MODE]; }}"
+    )
+  }
+
   test("SOQL list assignment") {
     happyTypeDeclaration("public class Dummy {{ List<Account> a = [Select Id from Account]; }}")
   }
@@ -119,6 +149,13 @@ class InlineQueryTest extends AnyFunSuite with TestHelper {
     happyTypeDeclaration(
       "public class Dummy {{ List<Object> a = [Select Count(Id) from Account]; }}"
     )
+  }
+
+  test("SOQL malformed bind reports syntax error without crashing") {
+    // Regression guard for #295: a malformed bind variable (missing colon) must surface a
+    // syntax error rather than throwing while building the SOQL model (see SOQL.apply guards).
+    typeDeclaration("public class Dummy {{ Object a = [Select Id from Account where Id = aId]; }}")
+    assert(dummyIssues.contains("Syntax: line 1 at 68: no viable alternative at input 'Id = aId'"))
   }
 
 }

@@ -6,7 +6,6 @@ This guide applies to all changes in the repository unless a more specific `AGEN
 ## Project Overview
 - Scala cross-build project targeting JVM and Scala.js platforms.
 - Requires Java 17+ for development while published artifacts remain Java 8 compatible.
-- Contains an `mcp/` sub-project that builds a Java 17 MCP server (see `mcp/AGENTS.md`).
 
 ## Development Expectations
 - Prefer small, composable functions and follow the existing domain terminology.
@@ -19,14 +18,16 @@ This guide applies to all changes in the repository unless a more specific `AGEN
 
 ## Testing
 - Run `sbt test` for Scala/JVM/JS changes when feasible.
+- For sample-project regression tests, use the sibling `../apex-samples` checkout:
+  1. Build the JVM distribution/classpath first: `sbt apexlsJVM/build`
+  2. Run samples from the npm package directory:
+     `cd js/npm && SAMPLES=$(cd ../../../apex-samples && pwd) npm run test-samples -- --runInBand`
+  3. If snapshot changes are expected, update with:
+     `cd js/npm && SAMPLES=$(cd ../../../apex-samples && pwd) npm run test-snapshot -- --runInBand`
 - Document any skipped or partial test coverage in the PR if full test suite is impractical.
 
 ## Git & PR Etiquette
 - Use Conventional Commit messages (e.g., `feat:`, `fix:`, `chore:`).
+- Update `CHANGELOG.md` under `[Unreleased]` for user-facing fixes, features, behavior changes, and removals; if no entry is needed, note why in the PR.
 - Summaries should focus on user-facing impact and avoid mentioning AI assistants.
 - Ensure PR descriptions include the commands/tests that were run.
-
-## Additional References
-- `.claude/CLAUDE.md` for architecture and command quick reference.
-- `.claude/GUIDELINES.md` for detailed coding guidelines and best practices.
-- `.claude/MODULES.md` for the planned modularization structure (informational).

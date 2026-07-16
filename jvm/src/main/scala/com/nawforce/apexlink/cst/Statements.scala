@@ -14,7 +14,7 @@
 
 package com.nawforce.apexlink.cst
 
-import com.financialforce.types.base.{Location => OPLocation}
+import io.github.apexdevtools.types.base.{Location => OPLocation}
 import com.nawforce.apexlink.cst.AssignableSupport.isAssignableDeclaration
 import com.nawforce.apexlink.cst.stmts._
 import com.nawforce.apexlink.names.TypeNames
@@ -37,6 +37,9 @@ abstract class Statement extends CST with ControlFlow {
   def verify(context: ScopeVerifyContext): Unit
 }
 
+/** Errors collected when parsing a block on-demand failed. */
+final case class ParseErrors(issues: ArraySeq[Issue])
+
 /** Block of statements, nesting uses a Block as a Statement.
   *
   * There are two types of Block, an Outer which can use lazy loading and an Inner which does not. The OuterBlock
@@ -45,7 +48,21 @@ abstract class Statement extends CST with ControlFlow {
   * need to use.
   */
 abstract class Block extends Statement {
+
+  /** Statements in the block. Returns best-effort statements if parsing failed; callers that need
+    * to distinguish parse-failure from a genuinely-empty block should use [[statementsOrErrors]].
+    */
   def statements(context: Option[ScopeVerifyContext] = None): Seq[Statement]
+
+  /** Statements in the block, or the parse errors encountered while building them.
+    *
+    * `Right(stmts)` — parsing succeeded; callers can verify or otherwise consume the statements.
+    * `Left(errors)` — parsing failed; the syntax errors have been logged when a context was
+    * supplied, but the AST is unreliable so callers should not run downstream analysis.
+    */
+  def statementsOrErrors(
+    context: Option[ScopeVerifyContext] = None
+  ): Either[ParseErrors, Seq[Statement]]
 }
 
 object Block {
@@ -67,10 +84,12 @@ object Block {
     */
   def constructOuterFromOutline(blockSource: Source, location: OPLocation): Block = {
     val block = OuterBlock(blockSource, null)
+    // Outline parser 2.0 reports block location as the content INSIDE the braces; shift the
+    // start back by one column so the block covers the opening '{' to match the ANTLR parser.
     block.setLocation(
       blockSource.path,
       location.startLine,
-      location.startLineOffset,
+      location.startLineOffset - 1,
       location.endLine,
       location.endLineOffset
     )
@@ -112,11 +131,17 @@ private final case class OuterBlock(
 ) extends Block {
   private var statementsRef: WeakReference[Seq[Statement]] = _
   private var reParsed                                     = false
+  // Sticky once a parse fails; reset on each re-parse so re-validation reflects current source.
+  private var parseErrors: ArraySeq[Issue] = ArraySeq.empty
 
   override def verify(context: ScopeVerifyContext): Unit = {
     val blockContext = new InnerScopeVerifyContext(context)
     statements(Some(blockContext)).foreach(_.verify(blockContext))
-    verifyControlPath(blockContext, BlockControlPattern())
+    // Skip control-flow analysis on a parse failure: it walks a partial AST and
+    // reliably emits spurious "Expected return statement"/"Method does not return"
+    // errors on top of the real syntax error.
+    if (parseErrors.isEmpty)
+      verifyControlPath(blockContext, BlockControlPattern())
     context.typePlugin.foreach(_.onScopeValidated(context.isStatic, blockContext))
   }
 
@@ -136,6 +161,9 @@ private final case class OuterBlock(
         // otherwise we need to re-parse on subsequent validations to re-report the errors
         if (result.issues.isEmpty) {
           blockContextRef = new WeakReference(statementContext)
+          parseErrors = ArraySeq.empty
+        } else {
+          parseErrors = result.issues
         }
         reParsed = true
       }
@@ -150,6 +178,13 @@ private final case class OuterBlock(
       }
     }
     statements
+  }
+
+  override def statementsOrErrors(
+    context: Option[ScopeVerifyContext] = None
+  ): Either[ParseErrors, Seq[Statement]] = {
+    val stmts = statements(context)
+    if (parseErrors.nonEmpty) Left(ParseErrors(parseErrors)) else Right(stmts)
   }
 
   // Construct statements from ANTLR AST
@@ -175,6 +210,10 @@ private final case class StatementBlock(statements: Seq[Statement]) extends Bloc
   }
 
   override def statements(context: Option[ScopeVerifyContext] = None): Seq[Statement] = statements
+
+  override def statementsOrErrors(
+    context: Option[ScopeVerifyContext] = None
+  ): Either[ParseErrors, Seq[Statement]] = Right(statements)
 }
 
 final case class LocalVariableDeclarationStatement(
@@ -258,9 +297,8 @@ final case class ForStatement(control: Option[ForControl], statement: Option[Sta
 object ForStatement {
   def construct(parser: CodeParser, statement: ForStatementContext): ForStatement = {
     ForStatement(
-      CodeParser.toScala(statement.forControl()).map(fc => ForControl.construct(parser, fc)),
-      CodeParser
-        .toScala(statement.statement())
+      Option(statement.forControl()).map(fc => ForControl.construct(parser, fc)),
+      Option(statement.statement())
         .flatMap(stmt => Statement.construct(parser, stmt))
     ).withContext(statement)
   }
@@ -277,8 +315,7 @@ sealed abstract class ForControl extends CST {
 object ForControl {
   def construct(parser: CodeParser, from: ForControlContext): ForControl = {
     val cst =
-      CodeParser
-        .toScala(from.enhancedForControl())
+      Option(from.enhancedForControl())
         .map(efc => EnhancedForControl.construct(efc))
         .getOrElse(BasicForControl.construct(parser, from))
     cst.withContext(from)
@@ -406,16 +443,13 @@ final case class BasicForControl(
 object BasicForControl {
   def construct(parser: CodeParser, from: ForControlContext): BasicForControl = {
     val forInit =
-      CodeParser
-        .toScala(from.forInit())
+      Option(from.forInit())
         .map(fi => ForInit.construct(parser, fi))
     val expression =
-      CodeParser
-        .toScala(from.expression())
+      Option(from.expression())
         .map(e => Expression.construct(e))
     val forUpdate =
-      CodeParser
-        .toScala(from.forUpdate())
+      Option(from.forUpdate())
         .map(u => ForUpdate.construct(u))
     BasicForControl(forInit, expression, forUpdate).withContext(from)
   }
@@ -446,12 +480,11 @@ final case class ExpressionListForInit(expressions: ArraySeq[Expression]) extend
 
 object ForInit {
   def construct(parser: CodeParser, from: ForInitContext): ForInit = {
-    CodeParser
-      .toScala(from.localVariableDeclaration())
+    Option(from.localVariableDeclaration())
       .map(lvd => LocalVariableForInit(LocalVariableDeclaration.construct(parser, lvd)))
       .getOrElse({
         val expressions =
-          CodeParser.toScala(CodeParser.toScala(from.expressionList()).get.expression())
+          CodeParser.toScala(Option(from.expressionList()).get.expression())
         ExpressionListForInit(Expression.construct(expressions))
       })
       .withContext(from)
@@ -485,7 +518,7 @@ object WhileStatement {
   def construct(parser: CodeParser, statement: WhileStatementContext): WhileStatement = {
     WhileStatement(
       Expression.construct(statement.parExpression().expression()),
-      CodeParser.toScala(statement.statement()).flatMap(stmt => Statement.construct(parser, stmt))
+      Option(statement.statement()).flatMap(stmt => Statement.construct(parser, stmt))
     ).withContext(statement)
   }
 }
@@ -529,8 +562,7 @@ object TryStatement {
   def construct(parser: CodeParser, from: TryStatementContext): TryStatement = {
     val catches = CodeParser.toScala(from.catchClause())
     val finallyBlock =
-      CodeParser
-        .toScala(from.finallyBlock())
+      Option(from.finallyBlock())
         .map(fb => Block.constructInner(parser, fb.block()))
     TryStatement(
       Block.constructInner(parser, from.block()),
@@ -599,9 +631,8 @@ object CatchClause {
         CatchClause(
           ApexModifiers.catchModifiers(parser, CodeParser.toScala(from.modifier()), from),
           qualifiedName,
-          CodeParser.getText(from.id()),
-          CodeParser
-            .toScala(from.block())
+          Option(from.id()).map(_.getText).getOrElse(""),
+          Option(from.block())
             .map(block => Block.constructInner(parser, block))
         ).withContext(from)
       })
@@ -639,8 +670,7 @@ final case class ReturnStatement(expression: Option[Expression]) extends Stateme
 object ReturnStatement {
   def construct(statement: ReturnStatementContext): ReturnStatement = {
     ReturnStatement(
-      CodeParser
-        .toScala(statement.expression())
+      Option(statement.expression())
         .map(e => Expression.construct(e))
     ).withContext(statement)
   }
@@ -755,8 +785,7 @@ final case class UpsertStatement(expression: Expression, field: Option[Qualified
 object UpsertStatement {
   def construct(statement: UpsertStatementContext): UpsertStatement = {
     val expression = Expression.construct(statement.expression())
-    val qualifiedName = CodeParser
-      .toScala(statement.qualifiedName())
+    val qualifiedName = Option(statement.qualifiedName())
       .flatMap(qualifiedName => QualifiedName.construct(qualifiedName))
     UpsertStatement(expression, qualifiedName).withContext(statement)
   }
@@ -815,13 +844,11 @@ final case class RunAsStatement(expressions: ArraySeq[Expression], block: Option
 object RunAsStatement {
   def construct(parser: CodeParser, statement: RunAsStatementContext): RunAsStatement = {
     val expressions: ArraySeq[Expression] =
-      CodeParser
-        .toScala(statement.expressionList())
+      Option(statement.expressionList())
         .map(el => Expression.construct(CodeParser.toScala(el.expression())))
         .getOrElse(Expression.emptyExpressions)
     val block =
-      CodeParser
-        .toScala(statement.block())
+      Option(statement.block())
         .map(b => Block.constructInner(parser, b))
     RunAsStatement(expressions, block).withContext(statement)
   }
@@ -884,7 +911,7 @@ object Statement {
     * @param statement ANTLR statement context
     */
   def construct(parser: CodeParser, statement: StatementContext): Option[Statement] = {
-    val typedStatement = CodeParser.toScala(statement.getChild(0))
+    val typedStatement = Option(statement.getChild(0))
     if (typedStatement.isEmpty) {
       // Log here just in case
       LoggerOps.info(s"Apex Statement found without content in ${parser.source.path}")
