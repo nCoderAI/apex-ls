@@ -26,14 +26,13 @@ jobs:
       - name: Build core apex-ls
         run: sbt build
 
-      - name: Build MCP Standalone JAR
-        working-directory: mcp
+      - name: Build Standalone JAR
         run: sbt buildStandalone
 
       - name: Find and rename JAR
         id: jar
         run: |
-          JAR=$(find mcp/target -name "*standalone.jar" | head -1)
+          JAR=$(find jvm/target -name "*standalone.jar" | head -1)
           echo "Found JAR: $JAR"
           cp "$JAR" apex-ls-mcp-standalone.jar
           echo "jar_path=apex-ls-mcp-standalone.jar" >> $GITHUB_OUTPUT

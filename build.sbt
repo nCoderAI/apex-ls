@@ -26,10 +26,11 @@ ThisBuild / resolvers += Resolver.sonatypeCentralSnapshots
 // Java 17 development with Java 8 runtime compatibility
 ThisBuild / javacOptions ++= Seq("-source", "8", "-target", "8")
 
-lazy val build      = taskKey[File]("Build artifacts")
-lazy val pack       = inputKey[Unit]("Publish specific local version")
-lazy val npmInstall = taskKey[Unit]("Install Node modules for Scala.js tasks")
-lazy val Dev        = config("dev") extend Compile
+lazy val build            = taskKey[File]("Build artifacts")
+lazy val pack             = inputKey[Unit]("Publish specific local version")
+lazy val npmInstall       = taskKey[Unit]("Install Node modules for Scala.js tasks")
+lazy val buildStandalone  = taskKey[File]("Build standalone fat JAR (native RPC Server)")
+lazy val Dev              = config("dev") extend Compile
 
 // Don't publish root
 publish / skip := true
@@ -56,6 +57,24 @@ lazy val apexls = crossProject(JSPlatform, JVMPlatform)
   )
   .jvmSettings(
     build       := buildJVM.value,
+    // Standalone fat JAR for GitHub Releases (native RPC Server entrypoint).
+    // Re-homed here from the deleted mcp/ subproject after shedding the MCP server;
+    // the consumer runs `java -cp <jar> io.github.apexdevtools.apexls.Server`.
+    buildStandalone            := assembly.value,
+    assembly / mainClass       := Some("io.github.apexdevtools.apexls.Server"),
+    assembly / assemblyJarName := s"apex-ls-mcp-v${version.value}-standalone.jar",
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "services", _ @ _*)                      => MergeStrategy.concat
+      case PathList("META-INF", "MANIFEST.MF")                           => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.exists(_.endsWith(".SF"))  => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.exists(_.endsWith(".DSA")) => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.exists(_.endsWith(".RSA")) => MergeStrategy.discard
+      case "application.conf"                                            => MergeStrategy.concat
+      case "logback.xml"                                                 => MergeStrategy.first
+      case "logback-test.xml"                                            => MergeStrategy.first
+      case "module-info.class"                                           => MergeStrategy.discard
+      case _                                                             => MergeStrategy.first
+    },
     Test / fork := true,
     Test / javaOptions ++= enableNativeAccessForJdk24Plus.value,
     libraryDependencies ++= Seq(
